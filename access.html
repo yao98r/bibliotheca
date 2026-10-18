@@ -3,6 +3,24 @@
 .privilege[hidden]{display:none}.privilege{display:flex;align-items:center;gap:20px;max-width:1160px;margin:20px auto 12px;padding:20px 26px;border:1px solid #b99257;border-left:4px solid #a46938;background:linear-gradient(110deg,#ead6ad,#f5e9cc);animation:arrive .6s ease-out}.seal{display:grid;place-items:center;flex:0 0 50px;height:50px;border:1px solid #b28a51;border-radius:50%;font-size:28px;color:#946034}.privilege small{font:10px Georgia,serif;letter-spacing:2px;color:#8b663d}.privilege h2{font-size:19px;font-weight:500;line-height:1.6;color:#624022;margin:4px 0}.privilege p{font-size:13px;color:#65472f;margin:4px 0;line-height:1.8}.privilege .blessing{font-size:12px;color:#876c4c}@keyframes arrive{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}@media(max-width:760px){.privilege{margin:14px 12px;padding:16px;gap:16px}.seal{flex-basis:34px;height:34px;font-size:22px}.privilege h2{font-size:17px}}@media(prefers-reduced-motion:reduce){.privilege{animation:none}}
 </style></head><body><header><div><a href="./">Bibliotheca</a><h1 id="title">正在確認閱覽權限…</h1><button id="download" hidden>下載 PDF</button></div></header><aside id="privilege" class="privilege" hidden aria-label="專屬閱覽通行"><span class="seal" aria-hidden="true">✦</span><div><small>ADITUS PRIVILEGIATUS</small><h2>超級閱覽權限已啟用</h2><p id="privilegeGreeting"></p><p id="privilegeMessage" class="blessing">這一卷，正在為你展開。願每一次翻頁，都離答案更近。</p></div></aside><div class="controls" id="controls" hidden><button id="prev">上一頁</button><label>第 <input id="number" type="number" min="1" value="1" aria-label="頁碼"> 頁</label><span id="total"></span><button id="next">下一頁</button><button id="reload">重新載入</button></div><p id="status" role="status" aria-live="polite"></p><p id="note" class="note" hidden>逐頁載入受控閱覽內容。檔案可能包含授權識別碼；使用紀錄僅供管理者查看。</p><main><canvas id="page" hidden></canvas></main><script type="module">const BACKEND='https://tianyan-books.yao98r.chatgpt.site';
 const STORAGE_KEY='bibliotheca-session-v1';
+const PENDING_LOGIN_KEY='bibliotheca-login-';
+async function exchangeLogin(code,state,verifier){
+ if(!/^[\w-]{43}$/.test(code||'')||!/^[\w-]{43}$/.test(state||'')||!/^[\w-]{64}$/.test(verifier||''))throw Error('登入資料無效，請重新登入。');
+ const response=await fetch(BACKEND+'/api/exchange',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'omit',cache:'no-store',redirect:'error',body:JSON.stringify({code,state,verifier})});
+ const data=await response.json();if(!response.ok)throw Error(data.error||'登入驗證失敗');
+ if(!data.token||!(data.expiresAt>Date.now()/1000))throw Error('登入驗證失敗，請重新登入。');
+ data.loginState=state;localStorage.setItem(STORAGE_KEY,JSON.stringify(data));sessionStorage.removeItem(STORAGE_KEY);return data;
+}
+async function completeRedirectLogin(){
+ if(new URLSearchParams(location.search).get('login_callback')!=='1')return false;
+ const fragment=new URLSearchParams(location.hash.slice(1)),code=fragment.get('code'),state=fragment.get('state');
+ const clean=new URL(location.href);clean.searchParams.delete('login_callback');clean.hash='';history.replaceState(null,'',clean.href);
+ if(!/^[\w-]{43}$/.test(state||''))throw Error('登入資料無效，請回到原本的書庫重新登入。');
+ const key=PENDING_LOGIN_KEY+state;let pending;try{pending=JSON.parse(localStorage.getItem(key)||'null');}catch{}
+ if(!pending||pending.state!==state||pending.expiresAt<=Date.now()) {localStorage.removeItem(key);throw Error('登入已逾時，請回到原本的書庫重新登入。');}
+ try{await exchangeLogin(code,state,pending.verifier);}finally{localStorage.removeItem(key);}
+ return true;
+}
 function savedSession(){try{const value=JSON.parse(localStorage.getItem(STORAGE_KEY)||sessionStorage.getItem(STORAGE_KEY)||'null');if(value?.token&&value.expiresAt>Date.now()/1000){localStorage.setItem(STORAGE_KEY,JSON.stringify(value));sessionStorage.removeItem(STORAGE_KEY);return value;}}catch{}clearSession();return null;}
 function clearSession(){localStorage.removeItem(STORAGE_KEY);sessionStorage.removeItem(STORAGE_KEY);}
 function localRoute(value){const u=new URL(value,BACKEND);if(u.origin!==BACKEND)throw Error('無效的書籍入口');const routes={'/':'./','/go':'go.html','/files':'files.html','/access':'access.html','/viewer':'viewer.html','/file':'download.html'};if(!(u.pathname in routes))throw Error('無效的書籍入口');return routes[u.pathname]+u.search;}
@@ -14,9 +32,14 @@ async function startLogin(onSuccess,onError){
  const popup=window.open('about:blank','bibliotheca-google-login','width=520,height=720');if(!popup){onError(Error('請允許登入視窗，再按一次登入。'));return;}
  const encode=bytes=>btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
  const state=encode(crypto.getRandomValues(new Uint8Array(32))),verifier=encode(crypto.getRandomValues(new Uint8Array(48))),challenge=encode(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier)));
- let ended=false;const cleanup=()=>{ended=true;window.removeEventListener('message',receive);clearInterval(watch);clearTimeout(timeout);};
- const receive=async event=>{if(ended||event.origin!==BACKEND||event.source!==popup||event.data?.type!=='bibliotheca-login'||event.data.state!==state)return;cleanup();try{const response=await fetch(BACKEND+'/api/exchange',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'omit',cache:'no-store',redirect:'error',body:JSON.stringify({code:event.data.code,state,verifier})});const data=await response.json();if(!response.ok)throw Error(data.error||'登入驗證失敗');localStorage.setItem(STORAGE_KEY,JSON.stringify(data));popup.close();await onSuccess();}catch(e){onError(e);}};
- window.addEventListener('message',receive);const watch=setInterval(()=>{if(popup.closed&&!ended){cleanup();onError(Error('登入視窗已關閉，請再按一次登入。'));}},1000),timeout=setTimeout(()=>{cleanup();popup.close();onError(Error('登入已逾時，請重新登入。'));},600000);
+ const pendingKey=PENDING_LOGIN_KEY+state;
+ try{localStorage.setItem(pendingKey,JSON.stringify({state,verifier,expiresAt:Date.now()+600000}));}catch{popup.close();onError(Error('請允許此網站儲存登入資料，再重新登入。'));return;}
+ let ended=false;const cleanup=()=>{ended=true;window.removeEventListener('message',receive);window.removeEventListener('storage',receiveStorage);clearTimeout(timeout);localStorage.removeItem(pendingKey);};
+ const receive=async event=>{if(ended||event.origin!==BACKEND||event.source!==popup||event.data?.type!=='bibliotheca-login'||event.data.state!==state)return;cleanup();try{await exchangeLogin(event.data.code,state,verifier);popup.close();await onSuccess();}catch(e){onError(e);}};
+ const receiveStorage=async event=>{if(ended||event.storageArea!==localStorage||event.key!==STORAGE_KEY)return;let session;try{session=JSON.parse(event.newValue);}catch{return;}if(session?.loginState!==state||!session.token||!(session.expiresAt>Date.now()/1000))return;cleanup();try{await onSuccess();}catch(e){onError(e);}};
+ window.addEventListener('message',receive);window.addEventListener('storage',receiveStorage);
+ // A browser may report closed after isolating a Google popup. Keep the redirect handoff available until its deadline.
+ const timeout=setTimeout(()=>{if(ended)return;cleanup();popup.close();onError(Error('登入已逾時，請重新登入。'));},600000);
  popup.location=BACKEND+'/auth?'+new URLSearchParams({state,challenge});
 }
 async function savePdf(path){const response=await authorizedFetch(path);if(!response.ok){const data=await response.json().catch(()=>({}));const e=Error(data.error||'下載未完成，請重試');e.status=response.status;throw e;}const blob=await response.blob();if(!blob.size)throw Error('檔案尚未取得，請重試');const header=response.headers.get('Content-Disposition')||'';let name='Bibliotheca.pdf';const utf=header.match(/filename\*=UTF-8''([^;]+)/i),plain=header.match(/filename="([^"]+)"/i);try{name=utf?decodeURIComponent(utf[1]):plain?.[1]||name;}catch{}const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(url),60000);}
