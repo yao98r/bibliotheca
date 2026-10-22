@@ -1,0 +1,15 @@
+<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>書庫連線管理 · Bibliotheca</title>
+<style>body{max-width:820px;margin:8vh auto;padding:24px;background:#f1e4cd;color:#302820;font:16px/1.8 system-ui}a{color:#9b472f}h1{font-family:Georgia,serif;font-weight:400}section{border-top:1px solid #ccb99a;padding:20px 0}button{padding:12px 18px;background:#9b472f;color:white;border:0;border-radius:4px;cursor:pointer;margin:6px}button:disabled{opacity:.5}#status{white-space:pre-wrap}code{overflow-wrap:anywhere}</style>
+<a href="/">← 回到書庫</a><h1>書庫連線管理</h1><p>僅管理者可以連接 Drive 及同步書目。</p><p id="status" role="status">正在確認登入…</p>
+<main hidden><section><h2>Google Drive</h2><p id="connection"></p><button id="connect">連接／重新授權 Google Drive</button><p>請使用 yaochen452@gmail.com。只會讀取書庫檔案，不會修改或刪除 Drive 原檔。</p></section>
+<section><h2>同步書目</h2><p>分批掃描參考書與模擬考資料夾；中斷後可繼續。分類及科目由檔名推定，請核對。此同步不會匯入舊站的使用者名單或歷史紀錄。</p><button id="sync">同步／繼續同步</button><button id="stop" disabled>完成目前批次後暫停</button></section>
+<section><h2>閱覽索引</h2><p>現有獨立 <code>檔案ID.json.gz</code> 索引可直接使用。缺少索引的書籍會顯示明確訊息；不會因缺少索引而將整份 PDF 提供給僅有逐頁閱覽權限的使用者。</p></section></main>
+<script>
+let me,stop=false;const $=s=>document.querySelector(s);
+async function api(path,body){let s;try{s=JSON.parse(localStorage.getItem('bibliotheca-cloudflare-session-v1'));}catch{}const r=await fetch(path,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+(s?.token||''),...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify({...body,csrf:me.csrf}):undefined});const d=await r.json();if(!r.ok)throw Error(d.error);return d;}
+async function refresh(){const d=await api('/api/drive/status');$('#connection').textContent=(d.configured?'已連接：'+d.email:'尚未連線')+'；已建立 '+d.books+' 筆書目。';}
+$('#connect').onclick=async()=>{try{const d=await api('/api/drive/connect',{});location.href=d.authorizationUrl;}catch(e){$('#status').textContent=e.message;}};
+$('#sync').onclick=async()=>{stop=false;$('#sync').disabled=true;$('#stop').disabled=false;try{do{const d=await api('/api/drive/sync',{});$('#status').textContent='本批處理 '+d.processed+' 筆；剩餘 '+d.remaining+' 個資料夾／分頁；共 '+d.books+' 筆書目。';if(!d.remaining)break;}while(!stop);await refresh();}catch(e){$('#status').textContent=e.message;}finally{$('#sync').disabled=false;$('#stop').disabled=true;}};
+$('#stop').onclick=()=>{stop=true;$('#stop').disabled=true;};
+(async()=>{try{me=await api('/api/me');if(!me.admin)throw Error('此頁僅供管理者使用');$('main').hidden=false;$('#status').textContent='登入身分：'+me.email;await refresh();}catch(e){$('#status').textContent=e.message+'；請先回到書庫登入。';}})();
+</script></html>

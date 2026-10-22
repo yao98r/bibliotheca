@@ -1,0 +1,24 @@
+{
+  "name": "bibliotheca-cloudflare",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "npm run build && wrangler dev",
+    "test": "node --test test/*.test.mjs",
+    "deploy": "npm run build && wrangler deploy",
+    "check": "npm run test && npm run build && wrangler deploy --dry-run"
+  },
+  "dependencies": {
+    "jose": "^6.1.0"
+  },
+  "devDependencies": {
+    "miniflare": "4.20260730.0",
+    "pdfjs-dist": "^6.4.299",
+    "wrangler": "^4.151.3"
+  },
+  "overrides": {
+    "sharp": "0.35.5",
+    "undici": "7.29.1"
+  }
+}

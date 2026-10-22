@@ -1,0 +1,7 @@
+node_modules/
+dist/
+dist-pages/
+.wrangler/
+.dev.vars*
+.env*
+secrets*.json

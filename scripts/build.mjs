@@ -1,0 +1,36 @@
+import {mkdir,readFile,writeFile,cp} from 'node:fs/promises';
+import vm from 'node:vm';
+const github=process.argv.includes('--github');
+const output=github?'dist-pages':'dist';
+const backend='https://bibliotheca-backend.bibliotheca-cloudflare.workers.dev';
+await mkdir(output+'/assets',{recursive:true});
+for(const name of ['index','files','go','viewer','access','download']) {
+ let html=await readFile(`${name}.html`,'utf8');
+ html=html.replaceAll("const BACKEND='https://tianyan-books.yao98r.chatgpt.site';",github?`const BACKEND='${backend}';`:'const BACKEND=location.origin;')
+   .replaceAll('https://tianyan-books.yao98r.chatgpt.site/assets/','./assets/')
+   .replaceAll("'bibliotheca-session-v1'","'bibliotheca-cloudflare-session-v1'");
+ const start=html.indexOf('async function startLogin('),end=html.indexOf('async function savePdf(',start);
+ if(start<0||end<0)throw Error('Missing login boundary in '+name);
+ html=html.slice(0,start)+`async function startLogin(onSuccess,onError){
+ try {
+ const encode=bytes=>btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
+ const state=encode(crypto.getRandomValues(new Uint8Array(32))),verifier=encode(crypto.getRandomValues(new Uint8Array(48))),challenge=encode(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier)));
+ localStorage.setItem(PENDING_LOGIN_KEY+state,JSON.stringify({state,verifier,expiresAt:Date.now()+600000}));
+ const returnTo=new URL('./',location.href).href;
+ const after=new URLSearchParams(location.search).get('return');if(after)sessionStorage.setItem('bibliotheca-after-login',after);
+ location.href=BACKEND+'/auth?'+new URLSearchParams({state,challenge,return_to:returnTo});
+ }catch(e){onError(e);}
+}
+`+html.slice(end);
+ html=html.replace('await completeRedirectLogin();','if(await completeRedirectLogin()){const after=sessionStorage.getItem("bibliotheca-after-login");sessionStorage.removeItem("bibliotheca-after-login");if(after){const u=new URL(location.href);u.searchParams.set("return",after);history.replaceState(null,"",u.href);if(returnAfterLogin())return;}}');
+ if(['index','files','go'].includes(name)) html=html.replace('<footer>',`<p><a href="${backend}/manage.html">管理者：Drive 連線與書目同步</a></p><footer>`);
+ for(const match of html.matchAll(/<script(\s[^>]*)?>([\s\S]*?)<\/script>/g))new vm.Script(match[1]?.includes('module')?'(async()=>{'+match[2]+'})':match[2],{filename:name+'.html'});
+ await writeFile(`${output}/${name}.html`,html);
+}
+if(!github)await cp('public/manage.html',output+'/manage.html');
+await cp('node_modules/pdfjs-dist/build/pdf.min.mjs',output+'/assets/pdf.min.mjs');
+await cp('node_modules/pdfjs-dist/build/pdf.worker.min.mjs',output+'/assets/pdf.worker.min.mjs');
+for(const dir of ['cmaps','standard_fonts','wasm']) await cp(`node_modules/pdfjs-dist/${dir}`,`${output}/assets/${dir}`,{recursive:true});
+await cp('PDFJS-LICENSE',output+'/PDFJS-LICENSE');
+await writeFile(output+'/.nojekyll','');
+console.log('Built '+output+' with local PDF.js assets; inline scripts parsed successfully.');

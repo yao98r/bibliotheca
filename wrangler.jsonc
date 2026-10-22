@@ -1,0 +1,35 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "bibliotheca-backend",
+  "main": "src/worker.mjs",
+  "compatibility_date": "2026-10-22",
+  "account_id": "22ffeea91c0cd97558e3ca37edfbc75b",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "html_handling": "none",
+    "run_worker_first": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "bibliotheca",
+      "migrations_dir": "migrations",
+      "database_id": "c41b5c63-a775-4b20-b5d8-391a5e2e42b7"
+    }
+  ],
+  "vars": {
+    "FRONTEND_URL": "https://yao98r.github.io/bibliotheca/",
+    "OWNER_EMAIL": "yaochen452@gmail.com",
+    "DRIVE_ROOT_ID": "12mSXv5B2rrF6Qsi9OzrckPDPtugJf1qt",
+    "REFERENCE_ROOT_ID": "1FmYHtHVtfwkV08Lg_Ur7mkzyxBBwaHje",
+    "MOCK_ROOT_ID": "1Zxu8k2l_WfotM4idSU4Z37lLqNIdf3g2",
+    "INDEX_ROOT_ID": "1RtKOBKa61_ipgl_eSCOLhooPw_qyIR0W"
+  },
+  "observability": {
+    "enabled": true,
+    "traces": {
+      "enabled": true
+    }
+  }
+}
