@@ -11,7 +11,7 @@ let mf,env,ownerToken,userToken;
 before(async()=>{
  mf=new Miniflare({modules:true,script:'export default {fetch(){return new Response("ok")}}',compatibilityDate:'2026-07-01',d1Databases:['DB']});
  env={DB:await mf.getD1Database('DB'),OWNER_EMAIL:'owner@example.com',ASSETS:{fetch:()=>new Response('static')}};
- const sql=await readFile('migrations/0001.sql','utf8');for(const statement of sql.split(';').map(s=>s.trim()).filter(Boolean))await env.DB.prepare(statement).run();
+ for(const migration of ['0001','0002']){const sql=await readFile('migrations/'+migration+'.sql','utf8');for(const statement of sql.split(';').map(s=>s.trim()).filter(Boolean))await env.DB.prepare(statement).run();}
  ownerToken=random();userToken=random();
  for(const [email,token,individual] of [['owner@example.com',ownerToken,0],['reader@example.com',userToken,1]]){
   await env.DB.prepare('INSERT INTO users(email,google_name,individual,view_enabled) VALUES (?,?,?,1)').bind(email,email,individual).run();
@@ -60,6 +60,9 @@ test('category permissions apply on every request',async()=>{await env.DB.prepar
 test('nested PDFs are individually searchable while retaining category authorization',async()=>{
  await env.DB.prepare('INSERT INTO assets(id,parent,book_id,name,mime) VALUES (?,?,?,?,?)').bind('nested-pdf','ref','ref','115年化學模擬題.pdf','application/pdf').run();
  const list=await (await call('/api/books',userToken)).json(),nested=list.find(b=>b.asset==='nested-pdf');assert.equal(nested.title,'115年化學模擬題');assert.equal(nested.subject,'化學');assert.equal(nested.id,'ref');assert.equal(nested.folder,false);assert.ok(list.every(b=>b.category==='參考書'));
+});
+test('owner can inspect PDF and index coverage independently of folder groups',async()=>{
+ const response=await call('/api/drive/status',ownerToken);assert.equal(response.status,200);const status=await response.json();assert.equal(status.pdfs,3);assert.equal(status.books,2);assert.equal(status.indexed,0);
 });
 test('blocked user loses active session immediately',async()=>{await env.DB.prepare("UPDATE users SET blocked=1 WHERE email='reader@example.com'").run();assert.equal((await call('/api/me',userToken)).status,403);await env.DB.prepare("UPDATE users SET blocked=0 WHERE email='reader@example.com'").run();});
 test('owner cannot be blocked',async()=>{assert.equal((await call('/api/allowlist',ownerToken,{csrf:'test-csrf',email:'owner@example.com',action:'remove'})).status,403);});

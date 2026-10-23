@@ -71,7 +71,7 @@ async function handle(request,env,ctx){
    for(const person of users){const p=permission(person,policy,person.email===env.OWNER_EMAIL.toLowerCase());Object.assign(person,p);person.downloads_today=(await one(env,'SELECT COUNT(*) n FROM downloads WHERE email=? AND day=?',person.email,day())).n;delete person.google_sub;}
    return json({users});
  }
- if(p==='/api/drive/status'&&method==='GET'){admin(u);const d=await setting(env,'drive'),counts=await one(env,"SELECT COUNT(*) pdfs,COALESCE(SUM(EXISTS(SELECT 1 FROM pdf_headers h WHERE h.size=a.size AND h.md5=a.md5)),0) indexed FROM assets a WHERE mime='application/pdf'");return json({configured:!!d,email:d?.email||null,books:(await one(env,'SELECT COUNT(*) n FROM books')).n,...counts});}
+ if(p==='/api/drive/status'&&method==='GET'){admin(u);const d=await setting(env,'drive'),counts=await one(env,"SELECT COUNT(*) pdfs,COALESCE(SUM(EXISTS(SELECT 1 FROM pdf_headers h WHERE h.size=a.size AND h.md5=a.md5)),0) indexed_count FROM assets a WHERE mime='application/pdf'");return json({configured:!!d,email:d?.email||null,books:(await one(env,'SELECT COUNT(*) n FROM books')).n,pdfs:counts.pdfs,indexed:counts.indexed_count});}
  if(p==='/api/drive/connect'&&body){admin(u);const auth=await beginAuth(request,env,u);return json({authorizationUrl:auth.headers.get('Location')},{headers:{'Set-Cookie':auth.headers.get('Set-Cookie')}});}
  if(p==='/api/drive/sync'&&body){admin(u);return json(await syncStep(env));}
  if(p==='/api/files'&&method==='GET'){
