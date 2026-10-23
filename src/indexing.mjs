@@ -81,6 +81,19 @@ export async function finishIndex(env,body){
  ]);
  return {ok:true,pages:job.page_count};
 }
+export async function storeIndexPages(env,body){
+ const {job}=await currentJob(env,body.job),pages=body.pages;
+ if(!Array.isArray(pages)||!pages.length||pages.length>8||pages.some((p,i)=>!Number.isInteger(p.page)||p.page<1||p.page>job.page_count||(i&&p.page!==pages[i-1].page+1)))fail(400,'批次索引頁碼無效');
+ const pending=pages.filter(p=>p.page>=job.next_page);
+ if(!pending.length)return {nextPage:job.next_page};
+ if(job.status!=='building'||pending[0].page!==job.next_page)fail(409,'請依序建立頁面索引');
+ for(const p of pending)await validatePage(p.data,job.size);
+ const statements=[];
+ for(const p of pending)for(let offset=0,part=0;offset<p.data.length;offset+=32000,part++)statements.push(env.DB.prepare("INSERT OR IGNORE INTO pdf_pages(asset,page,part,data) SELECT id,?,?,? FROM index_jobs WHERE id=? AND next_page=? AND status='building'").bind(p.page,part,p.data.slice(offset,offset+32000),job.id,job.next_page));
+ statements.push(env.DB.prepare("UPDATE index_jobs SET next_page=next_page+?,error=NULL,updated_at=? WHERE id=? AND next_page=? AND status='building'").bind(pending.length,iso(),job.id,job.next_page));
+ await env.DB.batch(statements);
+ return {nextPage:(await one(env,'SELECT next_page FROM index_jobs WHERE id=?',job.id)).next_page};
+}
 export async function indexError(env,body){
  const {job}=await currentJob(env,body.job);
  if(job.status!=='ready')await run(env,"UPDATE index_jobs SET status='error',error=?,updated_at=? WHERE id=?",String(body.message||'處理中斷，請重試').slice(0,300),iso(),job.id);

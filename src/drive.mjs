@@ -1,6 +1,7 @@
 import {fail,bounded,unb64,replaceTrace} from './core.mjs';
 import {driveToken,one,run,rows} from './auth.mjs';
 import {appendPdfTail} from './pdf-stream.mjs';
+import {restoredCategory} from './catalog.mjs';
 const FOLDER='application/vnd.google-apps.folder';
 const validId=s=>typeof s==='string'&&/^[\w-]{10,200}$/.test(s);
 export async function drive(env,path,token,headers={}){
@@ -23,8 +24,8 @@ export async function syncStep(env){
    if(![FOLDER,'application/pdf'].includes(f.mimeType))continue;
    const bookId=task.book_id||f.id;
    if(!task.book_id){
-     const title=f.name.replace(/\.pdf$/i,''),book={id:bookId,title,category:task.category,subject:title.match(/數學[AB甲乙]?|國文|英文|物理|化學|生物|地理|歷史|公民|自然|社會/)?.[0]||'',publisher:title.match(/[\[［【]([^\]］】]+)[\]］】]/)?.[1]||'',year:title.match(/\d{3}(?=年)/)?.[0]||'',series:'',referenceKind:task.category==='參考書'?(title.includes('歷屆')?'歷屆學測彙編':title.includes('模擬')?'成冊模擬題本':'學習講義'):'',folder:f.mimeType===FOLDER,hasAnswer:false};
-     statements.push(env.DB.prepare('INSERT INTO books VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,category=excluded.category,data=excluded.data').bind(bookId,title,task.category,JSON.stringify(book)));
+     const title=f.name.replace(/\.pdf$/i,''),book={id:bookId,title,category:restoredCategory(f.id,task.category),subject:title.match(/數學[AB甲乙]?|國文|英文|物理|化學|生物|地理|歷史|公民|自然|社會/)?.[0]||'',publisher:title.match(/[\[［【]([^\]］】]+)[\]］】]/)?.[1]||'',year:title.match(/\d{3}(?=年)/)?.[0]||'',series:'',referenceKind:task.category==='參考書'?(title.includes('歷屆')?'歷屆學測彙編':title.includes('模擬')?'成冊模擬題本':'學習講義'):'',folder:f.mimeType===FOLDER,hasAnswer:false};
+     statements.push(env.DB.prepare('INSERT INTO books VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,category=excluded.category,data=excluded.data').bind(bookId,title,book.category,JSON.stringify(book)));
    }
    statements.push(env.DB.prepare('INSERT INTO assets(id,parent,book_id,name,mime,size,md5) VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET parent=excluded.parent,book_id=excluded.book_id,name=excluded.name,mime=excluded.mime,size=excluded.size,md5=excluded.md5').bind(f.id,task.id,bookId,f.name,f.mimeType,Number(f.size)||0,f.md5Checksum||null));
    if(f.mimeType===FOLDER)statements.push(env.DB.prepare('INSERT OR IGNORE INTO scan VALUES (?,?,?,NULL)').bind(f.id,task.category,bookId));

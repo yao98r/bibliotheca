@@ -1,4 +1,4 @@
-import {mkdir,readFile,writeFile,cp} from 'node:fs/promises';
+import {mkdir,readFile,writeFile,cp,rm} from 'node:fs/promises';
 import vm from 'node:vm';
 const github=process.argv.includes('--github');
 const output=github?'dist-pages':'dist';
@@ -29,7 +29,8 @@ for(const name of ['index','files','go','viewer','access','download']) {
  html=html.replaceAll('fastDoc.destroy()','fastDoc.loadingTask.destroy()').replaceAll('doc.destroy()','doc.loadingTask.destroy()');
  // Keep navigation on the frontend origin where the bearer session is stored.
  const openStart=html.indexOf('async function recordOpen('),openEnd=html.indexOf('async function showFiles()',openStart);
- if(openStart>=0&&openEnd>openStart)html=html.slice(0,openStart)+`async function recordOpen(book,action,button,asset){status('');button.disabled=true;try{asset=asset||book.asset;const r=await api('/api/event',{id:crypto.randomUUID(),csrf:me.csrf,action,bookId:book.id,...(asset?{asset}:{})});location.href=r.url;}catch(e){status(e.message);}finally{button.disabled=false;}}\n`+html.slice(openEnd);
+ if(openStart>=0&&openEnd>openStart)html=html.slice(0,openStart)+`async function recordOpen(book,action,button,asset){status('');button.disabled=true;try{const answer=action.startsWith('answer');asset=asset||(answer?book.answerAsset:book.asset);const bookId=answer?(book.answerBookId||book.id):book.id;const r=await api('/api/event',{id:crypto.randomUUID(),csrf:me.csrf,action,bookId,...(asset?{asset}:{})});location.href=r.url;}catch(e){status(e.message);}finally{button.disabled=false;}}\n`+html.slice(openEnd);
+ html=html.replace('bookId:context.bookId,action:context.action','bookId:context.bookId,action:context.action,...(context.asset?{asset:context.asset}:{})');
  html=html.replace(/\$\('download'\)\.onclick=async\(\)=>\{const popup=window\.open[\s\S]*?finally\{\$\('download'\)\.disabled=false;\}\};/,`$('download').onclick=async()=>{$('download').disabled=true;try{const result=await api('/api/viewer/download',{csrf:me.csrf,ticket:params.get('ticket')});location.href=result.url;}catch(e){$('status').textContent=e.message;}finally{$('download').disabled=false;}};`);
  if(['index','files','go'].includes(name)) html=html.replace('<footer>',`<p><a href="${backend}/manage.html">管理者：Drive 連線與書目同步</a></p><footer>`);
  for(const match of html.matchAll(/<script(\s[^>]*)?>([\s\S]*?)<\/script>/g))new vm.Script(match[1]?.includes('module')?'(async()=>{'+match[2]+'})':match[2],{filename:name+'.html'});
@@ -46,6 +47,11 @@ if(!github){
  await cp('node_modules/spark-md5/LICENSE',output+'/assets/SPARK-MD5-LICENSE');
 }
 await cp('node_modules/pdfjs-dist/build/pdf.min.mjs',output+'/assets/pdf.min.mjs');
+await rm(output+'/assets/tsea-mark.png',{force:true});
+await cp('public/trace-watermark.mjs',output+'/assets/trace-watermark.mjs');
+await cp('public/pdf-render.mjs',output+'/assets/pdf-render.mjs');
+await cp('node_modules/pdf-lib/dist/pdf-lib.esm.min.js',output+'/assets/pdf-lib.esm.min.js');
+await cp('node_modules/pdf-lib/LICENSE.md',output+'/assets/PDF-LIB-LICENSE');
 await cp('node_modules/pdfjs-dist/build/pdf.worker.min.mjs',output+'/assets/pdf.worker.min.mjs');
 for(const dir of ['cmaps','standard_fonts','wasm']) await cp(`node_modules/pdfjs-dist/${dir}`,`${output}/assets/${dir}`,{recursive:true});
 await cp('PDFJS-LICENSE',output+'/PDFJS-LICENSE');

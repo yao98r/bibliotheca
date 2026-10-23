@@ -7,6 +7,7 @@ import {hash,random,now,replaceTrace,permission,seal,unseal} from '../src/core.m
 import {singlePage,fullFile,indexFor} from '../src/drive.mjs';
 import {loginReturn} from '../src/origins.mjs';
 import {authErrorPage} from '../src/auth-error.mjs';
+import restored from '../src/restored-catalog.mjs';
 let mf,env,ownerToken,userToken;
 before(async()=>{
  mf=new Miniflare({modules:true,script:'export default {fetch(){return new Response("ok")}}',compatibilityDate:'2026-07-01',d1Databases:['DB']});
@@ -102,4 +103,52 @@ test('Workers native PDF pipe enforces complete transfer and appends trailer',as
  const pipe=await readFile('src/pdf-stream.mjs','utf8');
  const runtime=new Miniflare({modules:true,script:pipe+`\nexport default {fetch(request){const size=Number(new URL(request.url).searchParams.get('size'));return new Response(appendPdfTail(new Response('PDF').body,size,new TextEncoder().encode('TAIL')));}}`,compatibilityDate:'2026-07-01'});
  try{const ok=await runtime.dispatchFetch('https://test/?size=3');assert.equal(await ok.text(),'PDFTAIL');const short=await runtime.dispatchFetch('https://test/?size=4');const incomplete=await short.text().catch(()=>'');assert.notEqual(incomplete.length,8);}finally{await runtime.dispose();}
+});
+
+test('old book IDs resolve through registered assets and retain explicit Notion selection',async()=>{
+ const source=restored.find(b=>b.category==='參考書'&&!b.answerAsset);
+ await env.DB.prepare('INSERT INTO assets(id,parent,book_id,name,mime) VALUES (?,?,?,?,?)').bind(source.asset,'root','ref','Recovered.pdf','application/pdf').run();
+ try{
+  const r=await call('/api/context?book='+source.id,ownerToken);assert.equal(r.status,200);
+  const data=await r.json();assert.equal(data.asset,source.asset);assert.equal(data.bookId,'ref');assert.equal(data.title,source.title);
+  assert.equal((await call('/api/context?book='+source.id+'&asset=unrelated',ownerToken)).status,404);
+  assert.equal((await call('/api/context?book='+source.id+'&action=answer_open',ownerToken)).status,404);
+  const specific=await call('/api/context?book=ref&asset='+source.asset,ownerToken);assert.equal((await specific.json()).asset,source.asset);
+  assert.equal((await call('/api/context?book=ref&asset=mock',ownerToken)).status,404);
+ }finally{await env.DB.prepare('DELETE FROM assets WHERE id=?').bind(source.asset).run();}
+});
+test('unimported old sources fail explicitly instead of substituting a similarly named PDF',async()=>{
+ const r=await call('/api/context?book='+restored.find(b=>b.category==='模擬考題本').id,ownerToken);
+ assert.equal(r.status,409);assert.match((await r.json()).error,/尚未匯入/);
+});
+
+test('default E rank preserves individual ranks, owner authority and access policy',()=>{
+ const user={level:'A',individual:0,blocked:0},policy={enabled:true,defaultTier:'catalog',scope:'ref',dailyLimit:3};
+ const inherited=permission(user,policy,false);assert.equal(inherited.level,'E');assert.equal(inherited.view_enabled,0);assert.equal(inherited.download_mode,'view');assert.equal(inherited.access_scope,'ref');assert.equal(inherited.admin,false);
+ const individual=permission({...user,individual:1,level:'C',view_enabled:1,download_mode:'download'},policy,false);assert.equal(individual.level,'C');assert.equal(individual.download_mode,'download');
+ const owner=permission(user,policy,true);assert.equal(owner.level,'A');assert.equal(owner.admin,true);assert.equal(owner.download_mode,'download');assert.equal(owner.access_scope,'both');assert.equal(owner.daily_download_limit,null);
+});
+test('ordinary account responses omit grade data while owner retains rank management',async()=>{
+ const reader=await (await call('/api/me',userToken)).json();assert.equal(reader.admin,false);assert.equal('level' in reader,false);assert.equal('ranks' in reader,false);assert.equal(reader.canView,true);
+ const owner=await (await call('/api/me',ownerToken)).json();assert.equal(owner.admin,true);assert.ok(owner.level);assert.equal(owner.ranks.length,5);assert.equal(owner.canDownload,true);
+});
+
+test('trace context is ticket-bound; page reports deduplicate and old source evidence stays immutable',async()=>{
+ const code='ABCD-EFGH',view=random(),download=random(),md5='1234567890abcdef1234567890abcdef';
+ await env.DB.prepare('UPDATE assets SET size=10,md5=? WHERE id=?').bind(md5,'ref').run();
+ await env.DB.prepare('INSERT OR REPLACE INTO pdf_headers VALUES (?,?,?,?,?)').bind('ref',10,md5,'tail',3).run();
+ for(const [raw,trace,kind,action] of [[view,code,'view','open'],[download,'JKLM-NPQR','download','download_request']])await env.DB.prepare('INSERT INTO tickets VALUES (?,?,?,?,?,?,?,?,NULL,?)').bind(await hash(raw),'owner@example.com','ref','ref',action,kind,trace,new Date().toISOString(),now()+3600).run();
+ await env.DB.prepare('INSERT INTO events VALUES (?,?,?,?,?,?)').bind('trace:'+code+':source:'+md5,'owner@example.com','ref','Original.pdf','trace_issue',new Date().toISOString()).run();
+ assert.equal((await call('/api/download-context?ticket='+download,userToken)).status,403);
+ assert.equal((await call('/api/download-context?ticket='+view,ownerToken)).status,403);
+ const own=await (await call('/api/download-context?ticket='+download,ownerToken)).json();assert.equal(own.traceCode,'JKLM-NPQR');
+ for(let i=0;i<2;i++)assert.equal((await call('/api/trace/page',ownerToken,{csrf:'test-csrf',ticket:view,page:2})).status,200);
+ for(const page of [0,4,1.5,'2'])assert.equal((await call('/api/trace/page',ownerToken,{csrf:'test-csrf',ticket:view,page})).status,400);
+ assert.equal((await call('/api/trace/page',ownerToken,{csrf:'test-csrf',ticket:download,page:1})).status,403);
+ assert.equal((await call('/api/trace/page',userToken,{csrf:'test-csrf',ticket:view,page:1})).status,403);
+ assert.equal((await call('/api/traces',userToken)).status,403);
+ await env.DB.prepare("UPDATE assets SET name='Changed.pdf',md5='changed' WHERE id='ref'").run();
+ const rows=(await (await call('/api/traces?code='+code,ownerToken)).json()).records;assert.equal(rows.length,1);assert.equal(rows[0].pages_reported,1);assert.equal(rows[0].pages_issued,0);assert.equal(rows[0].source_md5,md5);assert.equal(rows[0].title,'Original.pdf');
+ const stats=await (await call('/api/stats',ownerToken)).json();assert.ok(stats.events.every(e=>!['page_reported','trace_issue'].includes(e.action)));
+ assert.equal((await call('/api/traces?code=invalid',ownerToken)).status,400);
 });

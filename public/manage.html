@@ -3,13 +3,15 @@
 <a href="/">← 回到書庫</a><h1>書庫連線管理</h1><p>僅管理者可以連接 Drive 及同步書目。</p><p id="status" role="status">正在確認登入…</p>
 <main hidden><section><h2>Google Drive</h2><p id="connection"></p><button id="connect">連接／重新授權 Google Drive</button><p>請使用 yaochen452@gmail.com。只會讀取書庫檔案，不會修改或刪除 Drive 原檔。</p></section>
 <section><h2>同步書目與 PDF</h2><p>將新 PDF 放進參考書或模擬考書庫，再按下同步。系統會掃描書目、自動建立閱讀索引，完成後即可依帳號權限閱讀與下載。</p><p>請保持本頁開啟直到顯示完成；大型 PDF 需要較長時間。若關閉或暫停，重新按同步可接續已完成的頁面。</p><button id="sync">同步書目並建立索引</button><button id="stop" disabled>暫停</button><progress id="progress" hidden></progress><p id="detail" role="status"></p><ul id="errors"></ul></section>
-<section><h2>支援的 PDF</h2><p>支援未加密、單檔不超過 256 MB 的 PDF。索引完整建立後才開放使用；失敗的檔案會列出原因，可修正原檔後再同步。分類與科目由檔名推定，請核對。</p></section></main>
+<section><h2>還原原版書目分類</h2><p>依舊天眼的確切檔案 ID，修正參考書與模擬考分類。未確認的檔案保留目前分類。</p><button id="restore">依原版目錄修正分類</button><p id="restoration" role="status"></p></section>
+<section><h2>支援的 PDF</h2><p>支援未加密、單檔不超過 256 MB 的 PDF。索引完整建立後才開放使用；失敗的檔案會列出原因，可修正原檔後再同步。既有書目依原版目錄分類，新檔案由檔名推定，請核對。</p></section></main>
 <script>
 let me,stop=false,indexWorker,cancelWork,running=false;const $=s=>document.querySelector(s);
 function token(){try{return JSON.parse(localStorage.getItem('bibliotheca-cloudflare-session-v1'))?.token||'';}catch{return '';}}
 async function api(path,body){const r=await fetch(path,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+token(),...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify({...body,csrf:me.csrf}):undefined});const d=await r.json();if(!r.ok){const e=Error(d.error||'操作失敗');e.status=r.status;throw e;}return d;}
 async function refresh(){const d=await api('/api/drive/status');$('#connection').textContent=(d.configured?'已連接：'+d.email:'尚未連線')+'；共 '+d.pdfs+' 份 PDF，'+d.indexed+' 份已備妥閱讀索引。';}
 $('#connect').onclick=async()=>{try{const d=await api('/api/drive/connect',{});location.href=d.authorizationUrl;}catch(e){$('#status').textContent=e.message;}};
+$('#restore').onclick=async()=>{const button=$('#restore');button.disabled=true;try{const d=await api('/api/catalog/restore',{apply:true});$('#restoration').textContent='已修正 '+d.changes.length+' 筆分類；'+d.conflicts.length+' 筆對應衝突待確認。';}catch(e){$('#restoration').textContent=e.message;}finally{button.disabled=false;}};
 function build(job){return new Promise((resolve,reject)=>{
  const worker=new Worker('/assets/pdf-index-worker.js');indexWorker=worker;
  cancelWork=()=>{worker.terminate();reject(new DOMException('同步已暫停','AbortError'));};

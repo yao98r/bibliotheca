@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS users (
  email TEXT PRIMARY KEY, google_sub TEXT UNIQUE, google_name TEXT NOT NULL DEFAULT '',
- display_name TEXT NOT NULL DEFAULT '', level TEXT NOT NULL DEFAULT 'A',
+ display_name TEXT NOT NULL DEFAULT '', level TEXT NOT NULL DEFAULT 'E',
  access_scope TEXT NOT NULL DEFAULT 'both' CHECK(access_scope IN ('ref','mock','both')),
  download_mode TEXT NOT NULL DEFAULT 'view' CHECK(download_mode IN ('view','download')),
  view_enabled INTEGER NOT NULL DEFAULT 0, reading_mode TEXT NOT NULL DEFAULT 'protected',

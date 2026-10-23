@@ -10,11 +10,12 @@ export const day=()=>new Date(Date.now()+8*3600000).toISOString().slice(0,10);
 export const isDownload=a=>['download_request','answer_download'].includes(a);
 export const validAction=a=>['open','answer_open','download_request','answer_download'].includes(a);
 export const scopeAllows=(scope,category)=>scope==='both'||(scope==='ref'&&category==='參考書')||(scope==='mock'&&category==='模擬考題本');
+export const ranks=[{grade:'A',roman:'I',latin:'Textor Fati',title:'織命者'},{grade:'B',roman:'II',latin:'Vates',title:'神諭者'},{grade:'C',roman:'III',latin:'Praevidens',title:'先見者'},{grade:'D',roman:'IV',latin:'Augur',title:'解兆者'},{grade:'E',roman:'V',latin:'Quaerens Oraculum',title:'求諭者'}];
 export function permission(user,policy,owner){
  if(owner) return {...user,owner:true,admin:true,active:true,access_scope:'both',download_mode:'download',view_enabled:1,reading_mode:'fast',daily_download_limit:null};
  const active=!user.blocked&&(!!user.individual||policy.enabled);
  if(user.individual) return {...user,active,owner:false,admin:false};
- return {...user,active,owner:false,admin:false,inherited:true,access_scope:policy.scope,download_mode:policy.defaultTier==='download'?'download':'view',view_enabled:policy.defaultTier==='catalog'?0:1,reading_mode:'protected',daily_download_limit:policy.dailyLimit};
+ return {...user,level:'E',active,owner:false,admin:false,inherited:true,access_scope:policy.scope,download_mode:policy.defaultTier==='download'?'download':'view',view_enabled:policy.defaultTier==='catalog'?0:1,reading_mode:'protected',daily_download_limit:policy.dailyLimit};
 }
 export function validateProfile(b){
  if(!['A','B','C','D','E'].includes(b.level)||!['ref','mock','both'].includes(b.scope)||!['view','download'].includes(b.downloadMode)||typeof b.viewEnabled!=='boolean'||!['protected','fast'].includes(b.readingMode))fail(400,'權限設定無效');

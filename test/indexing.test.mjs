@@ -64,7 +64,7 @@ test('browser builder reconstructs individual pages and a valid traced full PDF'
  await assert.rejects(preparePdf(source,{size:source.length,md5:'wrong'},{PDFLib,SparkMD5}),/校驗/);
 });
 test('readers cannot obtain raw indexing sources or upload indexes',async()=>{
- for(const path of ['/api/index/next','/api/index/start','/api/index/page','/api/index/finish'])assert.equal((await call(path,{},reader)).status,403);
+ for(const path of ['/api/index/next','/api/index/start','/api/index/page','/api/index/pages','/api/index/finish'])assert.equal((await call(path,{},reader)).status,403);
  assert.equal((await call('/api/index/source?job=anything',undefined,reader)).status,403);
  assert.equal((await worker.fetch(new Request('https://books.test/api/index/next',{method:'POST',headers:{Authorization:'Bearer '+owner,Origin:'https://evil.test','Content-Type':'application/json'},body:JSON.stringify({csrf:'test-csrf'})}),env,{})).status,403);
 });
@@ -93,4 +93,18 @@ test('updated same-ID PDF uses matching checksum index instead of a stale origin
  await env.DB.prepare('INSERT INTO pdf_headers VALUES (?,?,?,?,?)').bind(asset,source.length-1,'old','invalid',1).run();
  const result=await indexFor(env,{id:asset,size:source.length,md5:checksum},'unused');assert.equal(result.indexAsset,job.id);
  await env.DB.prepare('UPDATE assets SET md5=? WHERE id=?').bind('changed',asset).run();assert.equal((await call('/api/index/finish',{job:job.id})).status,409);
+});
+test('batched indexes validate atomically, reject gaps, and support safe retries',async()=>{
+ await env.DB.prepare('UPDATE assets SET md5=? WHERE id=?').bind(checksum,asset).run();
+ const id='auto_'+await hash('batch-recovery-fixture');
+ await env.DB.prepare('DELETE FROM index_jobs WHERE asset=?').bind(asset).run();
+ await env.DB.prepare('INSERT INTO index_jobs(id,asset,size,md5,updated_at) VALUES (?,?,?,?,?)').bind(id,asset,source.length,checksum,new Date().toISOString()).run();
+ assert.equal((await call('/api/index/start',{job:id,header:builder.header})).status,200);
+ const pages=[{page:1,data:pack(await builder.page(1))},{page:2,data:pack(await builder.page(2))}];
+ assert.equal((await call('/api/index/pages',{job:id,pages:[pages[1]]})).status,409);
+ assert.equal((await call('/api/index/pages',{job:id,pages:[pages[0],{page:2,data:pack({length:5,parts:[[source.length,5]]})}]})).status,400);
+ assert.equal((await env.DB.prepare('SELECT next_page FROM index_jobs WHERE id=?').bind(id).first()).next_page,1);
+ assert.equal((await env.DB.prepare('SELECT COUNT(*) n FROM pdf_pages WHERE asset=?').bind(id).first()).n,0);
+ for(let n=0;n<2;n++){const r=await call('/api/index/pages',{job:id,pages});assert.equal(r.status,200);assert.equal((await r.json()).nextPage,3);}
+ assert.equal((await call('/api/index/finish',{job:id})).status,200);
 });

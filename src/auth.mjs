@@ -68,7 +68,7 @@ export async function callback(request,env){
  }
  const previous=await one(env,'SELECT * FROM users WHERE email=?',email);
  if(previous?.google_sub&&previous.google_sub!==payload.sub)fail(403,'帳號識別不同，請聯絡管理者');
- await run(env,'INSERT INTO users(email,google_sub,google_name,last_login) VALUES (?,?,?,?) ON CONFLICT(email) DO UPDATE SET google_sub=excluded.google_sub,google_name=excluded.google_name,last_login=excluded.last_login',email,payload.sub,payload.name||email,iso());
+ await run(env,'INSERT INTO users(email,google_sub,google_name,last_login,level) VALUES (?,?,?,?,?) ON CONFLICT(email) DO UPDATE SET google_sub=excluded.google_sub,google_name=excluded.google_name,last_login=excluded.last_login',email,payload.sub,payload.name||email,iso(),email===env.OWNER_EMAIL.toLowerCase()?'A':'E');
  await userFor(env,email);
  const code=random();await run(env,'INSERT INTO exchanges VALUES (?,?,?,?,?)',await hash(code),email,pending.clientState,pending.challenge,now()+120);
  const data=JSON.stringify({type:'bibliotheca-login',code,state:pending.clientState});

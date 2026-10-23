@@ -18,10 +18,13 @@ self.onmessage=async({data})=>{
   const started=await rpc('start',{job:job.id,header:builder.header});
   let page=started.nextPage;
   while(page<=builder.header.pageCount){
-   postMessage({type:'progress',phase:'page',page,total:builder.header.pageCount});
-   const entry=await builder.page(page),gzip=new Blob([JSON.stringify(entry)]).stream().pipeThrough(new CompressionStream('gzip'));
-   const payload=base64(new Uint8Array(await new Response(gzip).arrayBuffer()));
-   const saved=await rpc('page',{job:job.id,page,data:payload});
+   const pages=[];
+   for(let n=page;n<=builder.header.pageCount&&pages.length<8;n++){
+    postMessage({type:'progress',phase:'page',page:n,total:builder.header.pageCount});
+    const entry=await builder.page(n),gzip=new Blob([JSON.stringify(entry)]).stream().pipeThrough(new CompressionStream('gzip'));
+    const payload=base64(new Uint8Array(await new Response(gzip).arrayBuffer()));pages.push({page:n,data:payload});
+   }
+   const saved=await rpc('pages',{job:job.id,pages});
    if(saved.nextPage<=page||saved.nextPage>builder.header.pageCount+1)throw Error('頁面進度不符，請重試同步。');page=saved.nextPage;
   }
   await rpc('finish',{job:job.id});postMessage({type:'done',pages:builder.header.pageCount});
