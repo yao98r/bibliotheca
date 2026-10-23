@@ -24,6 +24,10 @@ The website's owner-only user-management panel adds named Google accounts and se
 
 `scripts/import-indexes.py` converts existing concatenated gzip PDF indexes to bounded SQL batches for `pdf_headers` and `pdf_pages`. Generated imports and source PDFs must remain outside the repository. Viewing retrieves only indexed page ranges. Full-file access requires download permission and uses the daily quota. Trace identifiers support attribution but do not prevent screenshots or redistribution.
 
+For a PDF without an existing index, install `pypdf==6.1.3` in an isolated Python environment and run `python scripts/build-pdf-index.py SOURCE.pdf DRIVE_ID OUTPUT.json.gz`. The builder validates page reconstruction and the full-document trace trailer without modifying the source. Import the resulting gzip file with `scripts/import-indexes.py`. Files copied within Drive may reuse an imported index only when their size and MD5 checksum both match; access is still checked against the requested file and its current library location.
+
+Browser-facing OAuth failures render a Chinese explanation with a link back to the GitHub website. API failures retain structured JSON for the application. An account denied by the allowlist is not automatically granted access when it signs in.
+
 If Google OAuth publishing status is Testing, add the owner as a test user. Drive refresh tokens issued in Testing expire after seven days, requiring reauthorization. Production publishing and any applicable Google verification are separate from site permissions.
 
 PDF.js is distributed under the Apache License 2.0; see PDFJS-LICENSE.

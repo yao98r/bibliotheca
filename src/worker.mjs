@@ -2,6 +2,7 @@ import {fail,now,iso,random,hash,day,isDownload,validAction,scopeAllows,permissi
 import {one,run,rows,setting,setSetting,session,jsonBody,csrf,beginAuth,callback,exchange,driveToken} from './auth.mjs';
 import {syncStep,assetFor,verifyAsset,indexFor,singlePage,fullFile} from './drive.mjs';
 import {allowedOrigin} from './origins.mjs';
+import {authErrorPage} from './auth-error.mjs';
 const json=Response.json;
 function admin(u){if(!u.admin)fail(403,'僅管理者可操作');}
 async function bookFor(env,u,id){const b=await one(env,'SELECT * FROM books WHERE id=?',id||'');if(!b)fail(404,'找不到書籍');if(!scopeAllows(u.access_scope,b.category))fail(403,'沒有此分類的使用權限');return {...JSON.parse(b.data),...b};}
@@ -119,7 +120,11 @@ export default {async fetch(request,env,ctx){
  const limited=/exceeded D1's free tier daily/.test(e.message||'');
  const status=limited?503:(e.status||500);
  if(status===500)console.error(JSON.stringify({event:'request_failed',path:new URL(request.url).pathname,type:e.name}));
- response=json({error:limited?'Cloudflare 今日免費資料庫額度已用完，台灣時間上午 08:00 重置後可重試。':status===500?'服務暫時無法完成操作':e.message},{status,...(limited?{headers:{'Retry-After':String(86400-now()%86400)}}:{})});
+ const message=limited?'Cloudflare 今日免費資料庫額度已用完，台灣時間上午 08:00 重置後可重試。':status===500?'服務暫時無法完成操作':e.message;
+ const headers=limited?{'Retry-After':String(86400-now()%86400)}:{};
+ if(['/auth','/auth/callback'].includes(new URL(request.url).pathname)){
+   response=new Response(authErrorPage(status,message,env.FRONTEND_URL||new URL('/',request.url).href),{status,headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
+ }else response=json({error:message},{status,headers});
  }
  const h=new Headers(response.headers);h.set('X-Content-Type-Options','nosniff');h.set('Referrer-Policy','no-referrer');h.set('X-Frame-Options','DENY');
  if(allowedOrigin(request,env)){h.set('Access-Control-Allow-Origin',request.headers.get('Origin'));h.set('Access-Control-Expose-Headers','Content-Disposition');}

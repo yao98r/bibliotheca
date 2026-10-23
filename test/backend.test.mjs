@@ -4,8 +4,9 @@ import {readFile} from 'node:fs/promises';
 import {Miniflare} from 'miniflare';
 import worker,{quota} from '../src/worker.mjs';
 import {hash,random,now,replaceTrace,permission,seal,unseal} from '../src/core.mjs';
-import {singlePage,fullFile} from '../src/drive.mjs';
+import {singlePage,fullFile,indexFor} from '../src/drive.mjs';
 import {loginReturn} from '../src/origins.mjs';
+import {authErrorPage} from '../src/auth-error.mjs';
 let mf,env,ownerToken,userToken;
 before(async()=>{
  mf=new Miniflare({modules:true,script:'export default {fetch(){return new Response("ok")}}',compatibilityDate:'2026-07-01',d1Databases:['DB']});
@@ -21,6 +22,12 @@ before(async()=>{
 after(async()=>{await mf?.dispose();});
 const req=(path,token,body,origin='https://books.test')=>new Request('https://books.test'+path,{method:body?'POST':'GET',headers:{...(token?{Authorization:'Bearer '+token}:{}),...(body?{'Content-Type':'application/json',Origin:origin}:{})},body:body?JSON.stringify(body):undefined});
 const call=(...args)=>worker.fetch(req(...args),env,{});
+test('browser OAuth errors render Chinese HTML while API failures stay JSON',async()=>{
+ const r=await call('/auth/callback');assert.equal(r.status,400);assert.match(r.headers.get('content-type'),/text\/html.*utf-8/);
+ const html=await r.text();assert.match(html,/登入已過期/);assert.match(html,/返回書庫/);assert.doesNotMatch(html,/\{"error":/);
+ const api=await call('/api/books');assert.match(api.headers.get('content-type'),/application\/json/);
+ const denial=authErrorPage(403,'尚未取得使用權限 <script>','https://yao98r.github.io/bibliotheca/');assert.match(denial,/僅開放管理者指定/);assert.match(denial,/&lt;script&gt;/);assert.doesNotMatch(denial,/<script>/);
+});
 test('root serves index without redirecting or changing the browser path',async()=>{
  const r=await worker.fetch(new Request('https://books.test/?login_callback=1'),{...env,ASSETS:{fetch:r=>new Response(new URL(r.url).pathname)}},{});
  assert.equal(r.status,200);assert.equal(await r.text(),'/index.html');
@@ -73,3 +80,13 @@ test('page endpoint assembles only the indexed byte ranges',async()=>{
 });
 test('range requests reject a Drive response containing the entire document',async()=>{const original=globalThis.fetch;globalThis.fetch=async()=>new Response('entire file');try{await assert.rejects(singlePage(env,{id:'file',size:10},{pages:[{length:3,parts:[[2,3]]}]},1,'ABCD-EFGH','token'),e=>e.status===502);}finally{globalThis.fetch=original;}});
 test('full document stream appends trace without buffering the source',async()=>{const original=globalThis.fetch;globalThis.fetch=async()=>new Response('PDF',{headers:{'Content-Length':'3'}});try{const stream=await fullFile(env,{id:'file',size:3},{tail:' /BibliothecaTrace (ZZZZ-ZZZZ)'},'ABCD-EFGH','token');assert.equal(await new Response(stream).text(),'PDF /BibliothecaTrace (ABCD-EFGH)');}finally{globalThis.fetch=original;}});
+test('copied Drive files reuse only size and checksum matched indexes',async()=>{
+ const sql=await readFile('migrations/0002.sql','utf8');for(const s of sql.split(';').map(s=>s.trim()).filter(Boolean))await env.DB.prepare(s).run();
+ await env.DB.prepare('INSERT INTO pdf_headers VALUES (?,?,?,?,?)').bind('original',10,'abc','tail',2).run();
+ const index=await indexFor(env,{id:'copy',size:10,md5:'abc'},'unused');assert.equal(index.asset,'copy');assert.equal(index.indexAsset,'original');
+ await assert.rejects(indexFor(env,{id:'original',size:11,md5:'abc'},'unused'),e=>e.status===409);
+});
+test('chunked Drive downloads validate actual length without requiring Content-Length',async()=>{
+ const original=globalThis.fetch;globalThis.fetch=async()=>new Response('PDF');
+ try{const index={tail:' /BibliothecaTrace (ZZZZ-ZZZZ)'};assert.match(await new Response(await fullFile(env,{id:'file',size:3},index,'ABCD-EFGH','token')).text(),/ABCD-EFGH/);await assert.rejects(new Response(await fullFile(env,{id:'file',size:4},index,'ABCD-EFGH','token')).text(),/Incomplete/);}finally{globalThis.fetch=original;}
+});

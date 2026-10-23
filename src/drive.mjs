@@ -51,10 +51,11 @@ export async function verifyAsset(env,asset,token){
  if(Number(meta.size)!==asset.size||meta.md5Checksum!==asset.md5)fail(409,'檔案已變更，請同步書目並重建閱覽索引');return meta;
 }
 export async function indexFor(env,asset,token){
- const imported=await one(env,'SELECT * FROM pdf_headers WHERE asset=?',asset.id);
+ const imported=await one(env,'SELECT * FROM pdf_headers WHERE asset=?',asset.id)
+   || await one(env,'SELECT * FROM pdf_headers WHERE size=? AND md5=? ORDER BY asset LIMIT 1',asset.size,asset.md5);
  if(imported){
    if(imported.size!==asset.size||imported.md5!==asset.md5)fail(409,'閱覽索引與原檔不符，請重建索引');
-   return {asset:asset.id,size:imported.size,md5:imported.md5,tail:imported.tail,tailEncoding:'base64',pageCount:imported.page_count,imported:true};
+    return {asset:asset.id,indexAsset:imported.asset,size:imported.size,md5:imported.md5,tail:imported.tail,tailEncoding:'base64',pageCount:imported.page_count,imported:true};
  }
  let id=asset.index_id;
  if(!id){
@@ -72,7 +73,7 @@ export async function indexFor(env,asset,token){
 export async function singlePage(env,asset,index,page,code,token){
  let entry;
  if(index.imported){
-   const parts=await rows(env,'SELECT data FROM pdf_pages WHERE asset=? AND page=? ORDER BY part',asset.id,page);
+   const parts=await rows(env,'SELECT data FROM pdf_pages WHERE asset=? AND page=? ORDER BY part',index.indexAsset||asset.id,page);
    if(!parts.length)fail(409,'這一頁尚未匯入完成');
    const response=new Response(new Blob([unb64(parts.map(p=>p.data).join(''))]).stream().pipeThrough(new DecompressionStream('gzip')));
    entry=JSON.parse(new TextDecoder().decode(await bounded(response,2*1024*1024)));
@@ -97,7 +98,9 @@ export async function fullFile(env,asset,index,code,token){
  const rawTail=index.tailEncoding==='base64'?unb64(index.tail):new TextEncoder().encode(index.tail);
  const textTail=new TextDecoder('latin1').decode(rawTail);
  if(rawTail.length>16384||!textTail.includes('/BibliothecaTrace (ZZZZ-ZZZZ)'))fail(409,'完整 PDF 追蹤索引尚未設定');
- const r=await drive(env,`files/${asset.id}?alt=media`,token);if(r.status!==200||Number(r.headers.get('content-length'))!==asset.size){await r.body?.cancel();fail(502,'來源 PDF 長度不符');}
+ const r=await drive(env,`files/${asset.id}?alt=media`,token),declared=r.headers.get('content-length');
+ // Drive may use chunked transfer. The stream below still verifies every byte.
+ if(r.status!==200||(declared!==null&&Number(declared)!==asset.size)){await r.body?.cancel();fail(502,'來源 PDF 長度不符');}
  const reader=r.body.getReader(),tail=rawTail.slice(),marker=new TextEncoder().encode('ZZZZ-ZZZZ'),replacement=new TextEncoder().encode(code);let count=0;
  outer:for(let i=0;i<=tail.length-marker.length;i++){for(let j=0;j<marker.length;j++)if(tail[i+j]!==marker[j])continue outer;tail.set(replacement,i);break;}
  return new ReadableStream({async pull(controller){try{const {done,value}=await reader.read();if(done){if(count!==asset.size)throw Error('Incomplete Drive stream');controller.enqueue(tail);controller.close();}else{count+=value.length;if(count>asset.size)throw Error('Oversized Drive stream');controller.enqueue(value);}}catch(e){await reader.cancel();controller.error(e);}},cancel(reason){return reader.cancel(reason);}});
