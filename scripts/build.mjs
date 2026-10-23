@@ -23,9 +23,13 @@ for(const name of ['index','files','go','viewer','access','download']) {
 }
 `+html.slice(end);
  html=html.replace('await completeRedirectLogin();','if(await completeRedirectLogin()){const after=sessionStorage.getItem("bibliotheca-after-login");sessionStorage.removeItem("bibliotheca-after-login");if(after){const u=new URL(location.href);u.searchParams.set("return",after);history.replaceState(null,"",u.href);if(returnAfterLogin())return;}}');
+ html=html.replace('const blob=await response.blob();',`const blob=await response.blob();const expected=response.headers.get('X-PDF-Bytes');if(expected!==null&&blob.size!==Number(expected))throw Error('PDF 傳輸中斷，請重新下載。');`);
+ html=html.replace('return new Uint8Array(await response.arrayBuffer());',`const bytes=new Uint8Array(await response.arrayBuffer());const expected=response.headers.get('X-PDF-Bytes');if(expected!==null&&bytes.length!==Number(expected))throw Error('PDF 傳輸中斷，請重新載入。');return bytes;`);
+ // PDF.js 6 releases document resources through the loading task.
+ html=html.replaceAll('fastDoc.destroy()','fastDoc.loadingTask.destroy()').replaceAll('doc.destroy()','doc.loadingTask.destroy()');
  // Keep navigation on the frontend origin where the bearer session is stored.
  const openStart=html.indexOf('async function recordOpen('),openEnd=html.indexOf('async function showFiles()',openStart);
- if(openStart>=0&&openEnd>openStart)html=html.slice(0,openStart)+`async function recordOpen(book,action,button,asset){status('');button.disabled=true;try{const r=await api('/api/event',{id:crypto.randomUUID(),csrf:me.csrf,action,bookId:book.id,...(asset?{asset}:{})});location.href=r.url;}catch(e){status(e.message);}finally{button.disabled=false;}}\n`+html.slice(openEnd);
+ if(openStart>=0&&openEnd>openStart)html=html.slice(0,openStart)+`async function recordOpen(book,action,button,asset){status('');button.disabled=true;try{asset=asset||book.asset;const r=await api('/api/event',{id:crypto.randomUUID(),csrf:me.csrf,action,bookId:book.id,...(asset?{asset}:{})});location.href=r.url;}catch(e){status(e.message);}finally{button.disabled=false;}}\n`+html.slice(openEnd);
  html=html.replace(/\$\('download'\)\.onclick=async\(\)=>\{const popup=window\.open[\s\S]*?finally\{\$\('download'\)\.disabled=false;\}\};/,`$('download').onclick=async()=>{$('download').disabled=true;try{const result=await api('/api/viewer/download',{csrf:me.csrf,ticket:params.get('ticket')});location.href=result.url;}catch(e){$('status').textContent=e.message;}finally{$('download').disabled=false;}};`);
  if(['index','files','go'].includes(name)) html=html.replace('<footer>',`<p><a href="${backend}/manage.html">管理者：Drive 連線與書目同步</a></p><footer>`);
  for(const match of html.matchAll(/<script(\s[^>]*)?>([\s\S]*?)<\/script>/g))new vm.Script(match[1]?.includes('module')?'(async()=>{'+match[2]+'})':match[2],{filename:name+'.html'});

@@ -18,6 +18,7 @@ before(async()=>{
   await env.DB.prepare('INSERT INTO sessions VALUES (?,?,?,?)').bind(await hash(token),email,'test-csrf',now()+3600).run();
  }
  for(const [id,category] of [['ref','參考書'],['mock','模擬考題本']])await env.DB.prepare('INSERT INTO books VALUES (?,?,?,?)').bind(id,id,category,JSON.stringify({id,title:id,category})).run();
+ for(const id of ['ref','mock'])await env.DB.prepare('INSERT INTO assets(id,parent,book_id,name,mime) VALUES (?,?,?,?,?)').bind(id,'root',id,id+'.pdf','application/pdf').run();
 });
 after(async()=>{await mf?.dispose();});
 const req=(path,token,body,origin='https://books.test')=>new Request('https://books.test'+path,{method:body?'POST':'GET',headers:{...(token?{Authorization:'Bearer '+token}:{}),...(body?{'Content-Type':'application/json',Origin:origin}:{})},body:body?JSON.stringify(body):undefined});
@@ -56,6 +57,10 @@ test('login return accepts exact configured path and rejects open redirects',()=
  assert.equal(loginReturn(new Request('https://books.test/auth?return_to='+encodeURIComponent(e.FRONTEND_URL)),e),e.FRONTEND_URL);
 });
 test('category permissions apply on every request',async()=>{await env.DB.prepare("UPDATE users SET access_scope='ref' WHERE email='reader@example.com'").run();const r=await call('/api/books',userToken);assert.deepEqual((await r.json()).map(b=>b.id),['ref']);assert.equal((await call('/api/event',userToken,{csrf:'test-csrf',bookId:'mock',action:'open'})).status,403);});
+test('nested PDFs are individually searchable while retaining category authorization',async()=>{
+ await env.DB.prepare('INSERT INTO assets(id,parent,book_id,name,mime) VALUES (?,?,?,?,?)').bind('nested-pdf','ref','ref','115年化學模擬題.pdf','application/pdf').run();
+ const list=await (await call('/api/books',userToken)).json(),nested=list.find(b=>b.asset==='nested-pdf');assert.equal(nested.title,'115年化學模擬題');assert.equal(nested.subject,'化學');assert.equal(nested.id,'ref');assert.equal(nested.folder,false);assert.ok(list.every(b=>b.category==='參考書'));
+});
 test('blocked user loses active session immediately',async()=>{await env.DB.prepare("UPDATE users SET blocked=1 WHERE email='reader@example.com'").run();assert.equal((await call('/api/me',userToken)).status,403);await env.DB.prepare("UPDATE users SET blocked=0 WHERE email='reader@example.com'").run();});
 test('owner cannot be blocked',async()=>{assert.equal((await call('/api/allowlist',ownerToken,{csrf:'test-csrf',email:'owner@example.com',action:'remove'})).status,403);});
 test('PKCE exchange checks verifier and only succeeds once under concurrency',async()=>{
@@ -89,4 +94,9 @@ test('copied Drive files reuse only size and checksum matched indexes',async()=>
 test('chunked Drive downloads validate actual length without requiring Content-Length',async()=>{
  const original=globalThis.fetch;globalThis.fetch=async()=>new Response('PDF');
  try{const index={tail:' /BibliothecaTrace (ZZZZ-ZZZZ)'};assert.match(await new Response(await fullFile(env,{id:'file',size:3},index,'ABCD-EFGH','token')).text(),/ABCD-EFGH/);await assert.rejects(new Response(await fullFile(env,{id:'file',size:4},index,'ABCD-EFGH','token')).text(),/Incomplete/);}finally{globalThis.fetch=original;}
+});
+test('Workers native PDF pipe enforces complete transfer and appends trailer',async()=>{
+ const pipe=await readFile('src/pdf-stream.mjs','utf8');
+ const runtime=new Miniflare({modules:true,script:pipe+`\nexport default {fetch(request){const size=Number(new URL(request.url).searchParams.get('size'));return new Response(appendPdfTail(new Response('PDF').body,size,new TextEncoder().encode('TAIL')));}}`,compatibilityDate:'2026-07-01'});
+ try{const ok=await runtime.dispatchFetch('https://test/?size=3');assert.equal(await ok.text(),'PDFTAIL');const short=await runtime.dispatchFetch('https://test/?size=4');const incomplete=await short.text().catch(()=>'');assert.notEqual(incomplete.length,8);}finally{await runtime.dispose();}
 });

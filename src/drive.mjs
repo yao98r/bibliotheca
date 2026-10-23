@@ -1,5 +1,6 @@
 import {fail,bounded,unb64,replaceTrace} from './core.mjs';
 import {driveToken,one,run,rows} from './auth.mjs';
+import {appendPdfTail} from './pdf-stream.mjs';
 const FOLDER='application/vnd.google-apps.folder';
 const validId=s=>typeof s==='string'&&/^[\w-]{10,200}$/.test(s);
 export async function drive(env,path,token,headers={}){
@@ -101,7 +102,7 @@ export async function fullFile(env,asset,index,code,token){
  const r=await drive(env,`files/${asset.id}?alt=media`,token),declared=r.headers.get('content-length');
  // Drive may use chunked transfer. The stream below still verifies every byte.
  if(r.status!==200||(declared!==null&&Number(declared)!==asset.size)){await r.body?.cancel();fail(502,'來源 PDF 長度不符');}
- const reader=r.body.getReader(),tail=rawTail.slice(),marker=new TextEncoder().encode('ZZZZ-ZZZZ'),replacement=new TextEncoder().encode(code);let count=0;
+ const tail=rawTail.slice(),marker=new TextEncoder().encode('ZZZZ-ZZZZ'),replacement=new TextEncoder().encode(code);
  outer:for(let i=0;i<=tail.length-marker.length;i++){for(let j=0;j<marker.length;j++)if(tail[i+j]!==marker[j])continue outer;tail.set(replacement,i);break;}
- return new ReadableStream({async pull(controller){try{const {done,value}=await reader.read();if(done){if(count!==asset.size)throw Error('Incomplete Drive stream');controller.enqueue(tail);controller.close();}else{count+=value.length;if(count>asset.size)throw Error('Oversized Drive stream');controller.enqueue(value);}}catch(e){await reader.cancel();controller.error(e);}},cancel(reason){return reader.cancel(reason);}});
+ return appendPdfTail(r.body,asset.size,tail);
 }

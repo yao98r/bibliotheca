@@ -1,8 +1,9 @@
-import {fail,now,iso,random,hash,day,isDownload,validAction,scopeAllows,permission,validateProfile,traceCode} from './core.mjs';
+import {fail,now,iso,random,hash,day,isDownload,validAction,scopeAllows,permission,validateProfile,traceCode,unb64} from './core.mjs';
 import {one,run,rows,setting,setSetting,session,jsonBody,csrf,beginAuth,callback,exchange,driveToken} from './auth.mjs';
 import {syncStep,assetFor,verifyAsset,indexFor,singlePage,fullFile} from './drive.mjs';
 import {allowedOrigin} from './origins.mjs';
 import {authErrorPage} from './auth-error.mjs';
+import {pdfCatalogEntry} from './catalog.mjs';
 const json=Response.json;
 function admin(u){if(!u.admin)fail(403,'僅管理者可操作');}
 async function bookFor(env,u,id){const b=await one(env,'SELECT * FROM books WHERE id=?',id||'');if(!b)fail(404,'找不到書籍');if(!scopeAllows(u.access_scope,b.category))fail(403,'沒有此分類的使用權限');return {...JSON.parse(b.data),...b};}
@@ -26,7 +27,7 @@ async function prepare(env,u,b,body,origin){
  const token=await driveToken(env);await verifyAsset(env,a,token);await indexFor(env,a,token);
  const raw=random(),code=traceCode(),kind=isDownload(body.action)?'download':'view';
  await run(env,'INSERT INTO tickets VALUES (?,?,?,?,?,?,?,?,NULL,?)',await hash(raw),u.email,b.id,a.id,body.action,kind,code,iso(),now()+3600);
- return {url:origin+(kind==='download'?'/file':'/viewer')+'?ticket='+raw};
+ return {url:origin+(kind==='download'?'/file':'/viewer')+'?ticket='+raw,title:a.name.replace(/\.pdf$/i,'')};
 }
 async function handle(request,env,ctx){
  const url=new URL(request.url),p=url.pathname,method=request.method;
@@ -46,7 +47,10 @@ async function handle(request,env,ctx){
  if(body)csrf(request,body,u,env);
  if(p==='/api/me'&&method==='GET')return json({email:u.email,name:u.display_name||u.google_name,level:u.level,admin:u.admin,csrf:u.csrf,canView:!!u.view_enabled,canDownload:u.download_mode==='download',readingMode:u.reading_mode,dailyLimit:u.daily_download_limit,downloadsToday:(await one(env,'SELECT COUNT(*) n FROM downloads WHERE email=? AND day=?',u.email,day())).n});
  if(p==='/api/logout'&&body){await run(env,'DELETE FROM sessions WHERE hash=?',u.sessionHash);return json({ok:true});}
- if(p==='/api/books'&&method==='GET')return json((await rows(env,'SELECT * FROM books')).filter(b=>scopeAllows(u.access_scope,b.category)).map(b=>JSON.parse(b.data)));
+ if(p==='/api/books'&&method==='GET'){
+   const books=new Map((await rows(env,'SELECT * FROM books')).filter(b=>scopeAllows(u.access_scope,b.category)).map(b=>[b.id,b]));
+   return json((await rows(env,"SELECT id,book_id,name FROM assets WHERE mime='application/pdf' ORDER BY name")).filter(a=>books.has(a.book_id)).map(a=>pdfCatalogEntry(a,books.get(a.book_id))));
+ }
  if(p==='/api/access-policy'){
    admin(u);if(body){if(typeof body.enabled!=='boolean'||!['catalog','read','download'].includes(body.defaultTier)||!['both','ref','mock'].includes(body.scope)||(body.dailyLimit!==null&&(!Number.isInteger(body.dailyLimit)||body.dailyLimit<0||body.dailyLimit>10000)))fail(400,'全站權限設定無效');await setSetting(env,'policy',{enabled:body.enabled,defaultTier:body.defaultTier,scope:body.scope,dailyLimit:body.dailyLimit});}return json(await setting(env,'policy'));
  }
@@ -67,7 +71,7 @@ async function handle(request,env,ctx){
    for(const person of users){const p=permission(person,policy,person.email===env.OWNER_EMAIL.toLowerCase());Object.assign(person,p);person.downloads_today=(await one(env,'SELECT COUNT(*) n FROM downloads WHERE email=? AND day=?',person.email,day())).n;delete person.google_sub;}
    return json({users});
  }
- if(p==='/api/drive/status'&&method==='GET'){admin(u);const d=await setting(env,'drive');return json({configured:!!d,email:d?.email||null,books:(await one(env,'SELECT COUNT(*) n FROM books')).n});}
+ if(p==='/api/drive/status'&&method==='GET'){admin(u);const d=await setting(env,'drive'),counts=await one(env,"SELECT COUNT(*) pdfs,COALESCE(SUM(EXISTS(SELECT 1 FROM pdf_headers h WHERE h.size=a.size AND h.md5=a.md5)),0) indexed FROM assets a WHERE mime='application/pdf'");return json({configured:!!d,email:d?.email||null,books:(await one(env,'SELECT COUNT(*) n FROM books')).n,...counts});}
  if(p==='/api/drive/connect'&&body){admin(u);const auth=await beginAuth(request,env,u);return json({authorizationUrl:auth.headers.get('Location')},{headers:{'Set-Cookie':auth.headers.get('Set-Cookie')}});}
  if(p==='/api/drive/sync'&&body){admin(u);return json(await syncStep(env));}
  if(p==='/api/files'&&method==='GET'){
@@ -84,7 +88,7 @@ async function handle(request,env,ctx){
    const id=body.id||random();if(typeof id!=='string'||id.length>100)fail(400,'事件代碼無效');
    if(body.action==='portal_view'){await run(env,'INSERT OR IGNORE INTO events VALUES (?,?,NULL,NULL,?,?)',id,u.email,body.action,iso());return json({ok:true});}
    const b=await bookFor(env,u,body.bookId);const result=await prepare(env,u,b,body,url.origin);
-   await run(env,'INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?)',id,u.email,b.id,b.title,body.action,iso());return json(result);
+   await run(env,'INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?)',id,u.email,b.id,result.title||b.title,body.action,iso());return json(result);
  }
  if(p==='/api/viewer/download'&&body){const {t,b}=await ticket(env,u,body.ticket);return json(await prepare(env,u,b,{asset:t.asset_id,action:t.action.startsWith('answer')?'answer_download':'download_request'},url.origin));}
  if(['/api/viewer','/api/page','/api/fast-file','/file'].includes(p)&&method==='GET'){
@@ -94,12 +98,12 @@ async function handle(request,env,ctx){
    if(p==='/api/fast-file'&&(u.reading_mode!=='fast'||u.download_mode!=='download'))fail(403,'沒有快速翻閱權限');
    const token=await driveToken(env);await verifyAsset(env,a,token);const index=await indexFor(env,a,token);
    const pageCount=index.pageCount??index.pages.length;
-   if(p==='/api/viewer')return json({title:b.title,pages:pageCount,canDownload:u.download_mode==='download',readingMode:u.reading_mode});
+   if(p==='/api/viewer')return json({title:a.name.replace(/\.pdf$/i,''),pages:pageCount,canDownload:u.download_mode==='download',readingMode:u.reading_mode});
    let stream;
    if(p==='/api/page'){const page=Number(url.searchParams.get('page'));if(!Number.isInteger(page)||page<1||page>pageCount)fail(400,'頁碼無效');stream=await singlePage(env,a,index,page,t.trace_code,token);}
    else {stream=await fullFile(env,a,index,t.trace_code,token);try{await quota(env,u,a.id);}catch(e){await stream.cancel();throw e;}}
    await run(env,'UPDATE tickets SET issued_at=COALESCE(issued_at,?) WHERE hash=?',iso(),t.hash);
-   return new Response(stream,{headers:{'Content-Type':'application/pdf','Content-Disposition':`${p==='/file'?'attachment':'inline'}; filename*=UTF-8''${encodeURIComponent(a.name)}`}});
+   return new Response(stream,{headers:{'Content-Type':'application/pdf','Content-Disposition':`${p==='/file'?'attachment':'inline'}; filename*=UTF-8''${encodeURIComponent(a.name)}`,...(p!=='/api/page'?{'X-PDF-Bytes':String(a.size+(index.tailEncoding==='base64'?unb64(index.tail).length:new TextEncoder().encode(index.tail).length))}:{})}});
  }
  if(p==='/api/traces'&&method==='GET'){
    admin(u);const code=url.searchParams.get('code');const records=await rows(env,`SELECT t.trace_code,t.asset_id,t.action,t.kind,t.created_at,t.issued_at,t.email,b.title,COALESCE(NULLIF(u.display_name,''),u.google_name) name FROM tickets t JOIN books b ON b.id=t.book_id JOIN users u ON u.email=t.email ${code?'WHERE t.trace_code=?':''} ORDER BY t.created_at DESC LIMIT 200`,...(code?[code]:[]));return json({records});
@@ -127,7 +131,7 @@ export default {async fetch(request,env,ctx){
  }else response=json({error:message},{status,headers});
  }
  const h=new Headers(response.headers);h.set('X-Content-Type-Options','nosniff');h.set('Referrer-Policy','no-referrer');h.set('X-Frame-Options','DENY');
- if(allowedOrigin(request,env)){h.set('Access-Control-Allow-Origin',request.headers.get('Origin'));h.set('Access-Control-Expose-Headers','Content-Disposition');}
+ if(allowedOrigin(request,env)){h.set('Access-Control-Allow-Origin',request.headers.get('Origin'));h.set('Access-Control-Expose-Headers','Content-Disposition, X-PDF-Bytes');}
  h.append('Vary','Origin');
  if(!new URL(request.url).pathname.startsWith('/assets/'))h.set('Cache-Control','no-store');
  h.set('Content-Security-Policy',"default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
