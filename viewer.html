@@ -38,14 +38,14 @@ async function startLogin(onSuccess,onError){
  location.href=BACKEND+'/auth?'+new URLSearchParams({state,challenge,return_to:returnTo});
  }catch(e){onError(e);}
 }
-async function savePdf(path){const response=await authorizedFetch(path);if(!response.ok){const data=await response.json().catch(()=>({}));const e=Error(data.error||'下載未完成，請重試');e.status=response.status;throw e;}const blob=await response.blob();if(!blob.size)throw Error('檔案尚未取得，請重試');const header=response.headers.get('Content-Disposition')||'';let name='Bibliotheca.pdf';const utf=header.match(/filename\*=UTF-8''([^;]+)/i),plain=header.match(/filename="([^"]+)"/i);try{name=utf?decodeURIComponent(utf[1]):plain?.[1]||name;}catch{}const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(url),60000);}
+async function savePdf(path){const response=await authorizedFetch(path);if(!response.ok){const data=await response.json().catch(()=>({}));const e=Error(data.error||'下載未完成，請重試');e.status=response.status;throw e;}const blob=await response.blob();const expected=response.headers.get('X-PDF-Bytes');if(expected!==null&&blob.size!==Number(expected))throw Error('PDF 傳輸中斷，請重新下載。');if(!blob.size)throw Error('檔案尚未取得，請重試');const header=response.headers.get('Content-Disposition')||'';let name='Bibliotheca.pdf';const utf=header.match(/filename\*=UTF-8''([^;]+)/i),plain=header.match(/filename="([^"]+)"/i);try{name=utf?decodeURIComponent(utf[1]):plain?.[1]||name;}catch{}const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(url),60000);}
 
 
 const $=id=>document.getElementById(id),params=new URLSearchParams(location.search);let me,data,pdfjs,page=1,loading=false,fastDoc=null;
 async function api(path,body){return remoteApi(path,body);}
 const fetchPdf=path=>authorizedFetch(path);
 function pdfOptions(bytes){return {data:bytes,isEvalSupported:false,useSystemFonts:true,cMapUrl:'./assets/cmaps/',cMapPacked:true,standardFontDataUrl:'./assets/standard_fonts/',wasmUrl:'./assets/wasm/',disableAutoFetch:true,disableStream:true};}
-async function pdfBytes(path){const response=await fetchPdf(path);if(!response.ok){const error=await response.json();throw Error(error.error||'無法載入檔案');}return new Uint8Array(await response.arrayBuffer());}
+async function pdfBytes(path){const response=await fetchPdf(path);if(!response.ok){const error=await response.json();throw Error(error.error||'無法載入檔案');}const bytes=new Uint8Array(await response.arrayBuffer());const expected=response.headers.get('X-PDF-Bytes');if(expected!==null&&bytes.length!==Number(expected))throw Error('PDF 傳輸中斷，請重新載入。');return bytes;}
 async function display(n){
  if(loading)return;loading=true;$('prev').disabled=$('next').disabled=true;$('page').hidden=true;let doc;
  try{
