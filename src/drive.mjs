@@ -52,7 +52,7 @@ export async function verifyAsset(env,asset,token){
  if(Number(meta.size)!==asset.size||meta.md5Checksum!==asset.md5)fail(409,'檔案已變更，請同步書目並重建閱覽索引');return meta;
 }
 export async function indexFor(env,asset,token){
- const imported=await one(env,'SELECT * FROM pdf_headers WHERE asset=?',asset.id)
+ const imported=await one(env,'SELECT * FROM pdf_headers WHERE asset=? AND size=? AND md5=?',asset.id,asset.size,asset.md5)
    || await one(env,'SELECT * FROM pdf_headers WHERE size=? AND md5=? ORDER BY asset LIMIT 1',asset.size,asset.md5);
  if(imported){
    if(imported.size!==asset.size||imported.md5!==asset.md5)fail(409,'閱覽索引與原檔不符，請重建索引');
@@ -62,7 +62,7 @@ export async function indexFor(env,asset,token){
  if(!id){
    const params=new URLSearchParams({q:`'${env.INDEX_ROOT_ID}' in parents and trashed = false and name = '${asset.id}.json.gz'`,fields:'files(id)',pageSize:'2'});
    const data=await (await drive(env,'files?'+params,token)).json();
-   if(data.files?.length!==1)fail(409,'此檔案尚未配置獨立閱覽索引，請管理者匯入索引');id=data.files[0].id;
+   if(data.files?.length!==1)fail(409,'此檔案尚未完成閱讀索引，請管理者在書庫連線管理按同步');id=data.files[0].id;
  }
  const response=await drive(env,`files/${id}?alt=media`,token);
  const gz=await bounded(response,2*1024*1024);

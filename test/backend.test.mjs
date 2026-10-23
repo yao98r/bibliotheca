@@ -92,7 +92,7 @@ test('copied Drive files reuse only size and checksum matched indexes',async()=>
  const sql=await readFile('migrations/0002.sql','utf8');for(const s of sql.split(';').map(s=>s.trim()).filter(Boolean))await env.DB.prepare(s).run();
  await env.DB.prepare('INSERT INTO pdf_headers VALUES (?,?,?,?,?)').bind('original',10,'abc','tail',2).run();
  const index=await indexFor(env,{id:'copy',size:10,md5:'abc'},'unused');assert.equal(index.asset,'copy');assert.equal(index.indexAsset,'original');
- await assert.rejects(indexFor(env,{id:'original',size:11,md5:'abc'},'unused'),e=>e.status===409);
+ const originalFetch=globalThis.fetch;globalThis.fetch=async()=>Response.json({files:[]});try{await assert.rejects(indexFor(env,{id:'original',size:11,md5:'abc'},'unused'),e=>e.status===409);}finally{globalThis.fetch=originalFetch;}
 });
 test('chunked Drive downloads validate actual length without requiring Content-Length',async()=>{
  const original=globalThis.fetch;globalThis.fetch=async()=>new Response('PDF');

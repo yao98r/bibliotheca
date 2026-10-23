@@ -35,7 +35,16 @@ for(const name of ['index','files','go','viewer','access','download']) {
  for(const match of html.matchAll(/<script(\s[^>]*)?>([\s\S]*?)<\/script>/g))new vm.Script(match[1]?.includes('module')?'(async()=>{'+match[2]+'})':match[2],{filename:name+'.html'});
  await writeFile(`${output}/${name}.html`,html);
 }
-if(!github)await cp('public/manage.html',output+'/manage.html');
+if(!github){
+ const manage=await readFile('public/manage.html','utf8');for(const match of manage.matchAll(/<script>([\s\S]*?)<\/script>/g))new vm.Script(match[1],{filename:'manage.html'});
+ await cp('public/manage.html',output+'/manage.html');
+ await cp('public/pdf-index-worker.js',output+'/assets/pdf-index-worker.js');
+ await cp('public/pdf-index-builder.mjs',output+'/assets/pdf-index-builder.mjs');
+ await cp('node_modules/pdf-lib/dist/pdf-lib.min.js',output+'/assets/pdf-lib.min.js');
+ await cp('node_modules/spark-md5/spark-md5.min.js',output+'/assets/spark-md5.min.js');
+ await cp('node_modules/pdf-lib/LICENSE.md',output+'/assets/PDF-LIB-LICENSE');
+ await cp('node_modules/spark-md5/LICENSE',output+'/assets/SPARK-MD5-LICENSE');
+}
 await cp('node_modules/pdfjs-dist/build/pdf.min.mjs',output+'/assets/pdf.min.mjs');
 await cp('node_modules/pdfjs-dist/build/pdf.worker.min.mjs',output+'/assets/pdf.worker.min.mjs');
 for(const dir of ['cmaps','standard_fonts','wasm']) await cp(`node_modules/pdfjs-dist/${dir}`,`${output}/assets/${dir}`,{recursive:true});

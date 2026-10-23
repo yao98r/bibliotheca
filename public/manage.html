@@ -2,14 +2,52 @@
 <style>body{max-width:820px;margin:8vh auto;padding:24px;background:#f1e4cd;color:#302820;font:16px/1.8 system-ui}a{color:#9b472f}h1{font-family:Georgia,serif;font-weight:400}section{border-top:1px solid #ccb99a;padding:20px 0}button{padding:12px 18px;background:#9b472f;color:white;border:0;border-radius:4px;cursor:pointer;margin:6px}button:disabled{opacity:.5}#status{white-space:pre-wrap}code{overflow-wrap:anywhere}</style>
 <a href="/">← 回到書庫</a><h1>書庫連線管理</h1><p>僅管理者可以連接 Drive 及同步書目。</p><p id="status" role="status">正在確認登入…</p>
 <main hidden><section><h2>Google Drive</h2><p id="connection"></p><button id="connect">連接／重新授權 Google Drive</button><p>請使用 yaochen452@gmail.com。只會讀取書庫檔案，不會修改或刪除 Drive 原檔。</p></section>
-<section><h2>同步書目</h2><p>分批掃描參考書與模擬考資料夾；中斷後可繼續。分類及科目由檔名推定，請核對。此同步不會匯入舊站的使用者名單或歷史紀錄。</p><button id="sync">同步／繼續同步</button><button id="stop" disabled>完成目前批次後暫停</button></section>
-<section><h2>閱覽索引</h2><p>現有獨立 <code>檔案ID.json.gz</code> 索引可直接使用。缺少索引的書籍會顯示明確訊息；不會因缺少索引而將整份 PDF 提供給僅有逐頁閱覽權限的使用者。</p></section></main>
+<section><h2>同步書目與 PDF</h2><p>將新 PDF 放進參考書或模擬考書庫，再按下同步。系統會掃描書目、自動建立閱讀索引，完成後即可依帳號權限閱讀與下載。</p><p>請保持本頁開啟直到顯示完成；大型 PDF 需要較長時間。若關閉或暫停，重新按同步可接續已完成的頁面。</p><button id="sync">同步書目並建立索引</button><button id="stop" disabled>暫停</button><progress id="progress" hidden></progress><p id="detail" role="status"></p><ul id="errors"></ul></section>
+<section><h2>支援的 PDF</h2><p>支援未加密、單檔不超過 256 MB 的 PDF。索引完整建立後才開放使用；失敗的檔案會列出原因，可修正原檔後再同步。分類與科目由檔名推定，請核對。</p></section></main>
 <script>
-let me,stop=false;const $=s=>document.querySelector(s);
-async function api(path,body){let s;try{s=JSON.parse(localStorage.getItem('bibliotheca-cloudflare-session-v1'));}catch{}const r=await fetch(path,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+(s?.token||''),...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify({...body,csrf:me.csrf}):undefined});const d=await r.json();if(!r.ok)throw Error(d.error);return d;}
+let me,stop=false,indexWorker,cancelWork,running=false;const $=s=>document.querySelector(s);
+function token(){try{return JSON.parse(localStorage.getItem('bibliotheca-cloudflare-session-v1'))?.token||'';}catch{return '';}}
+async function api(path,body){const r=await fetch(path,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+token(),...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify({...body,csrf:me.csrf}):undefined});const d=await r.json();if(!r.ok){const e=Error(d.error||'操作失敗');e.status=r.status;throw e;}return d;}
 async function refresh(){const d=await api('/api/drive/status');$('#connection').textContent=(d.configured?'已連接：'+d.email:'尚未連線')+'；共 '+d.pdfs+' 份 PDF，'+d.indexed+' 份已備妥閱讀索引。';}
 $('#connect').onclick=async()=>{try{const d=await api('/api/drive/connect',{});location.href=d.authorizationUrl;}catch(e){$('#status').textContent=e.message;}};
-$('#sync').onclick=async()=>{stop=false;$('#sync').disabled=true;$('#stop').disabled=false;try{do{const d=await api('/api/drive/sync',{});$('#status').textContent='本批處理 '+d.processed+' 筆；剩餘 '+d.remaining+' 個資料夾／分頁；共 '+d.books+' 筆書目。';if(!d.remaining)break;}while(!stop);await refresh();}catch(e){$('#status').textContent=e.message;}finally{$('#sync').disabled=false;$('#stop').disabled=true;}};
-$('#stop').onclick=()=>{stop=true;$('#stop').disabled=true;};
+function build(job){return new Promise((resolve,reject)=>{
+ const worker=new Worker('/assets/pdf-index-worker.js');indexWorker=worker;
+ cancelWork=()=>{worker.terminate();reject(new DOMException('同步已暫停','AbortError'));};
+ worker.onerror=()=>reject(Error('索引處理程式無法啟動，請重新整理後再試。'));
+ worker.onmessage=async({data:d})=>{
+  if(d.type==='progress'){
+   const bar=$('#progress');bar.hidden=false;
+   if(d.phase==='download'){bar.max=d.total;bar.value=d.loaded;$('#detail').textContent=job.name+'：正在讀取 '+(d.loaded/1048576).toFixed(1)+'／'+(d.total/1048576).toFixed(1)+' MB';}
+   else if(d.phase==='parse'){bar.removeAttribute('value');$('#detail').textContent=job.name+'：正在校驗與解析 PDF…';}
+   else{bar.max=d.total;bar.value=d.page-1;$('#detail').textContent=job.name+'：正在建立第 '+d.page+'／'+d.total+' 頁';}
+  }else if(d.type==='rpc'){
+   try{const result=await api('/api/index/'+d.action,d.body);worker.postMessage({type:'reply',id:d.id,result});}catch(e){worker.postMessage({type:'reply',id:d.id,error:e.message,status:e.status});}
+  }else if(d.type==='done')resolve(d);
+  else if(d.type==='error'){const e=Error(d.message);e.status=d.status;reject(e);}
+ };
+ worker.postMessage({type:'build',job,token:token()});
+}).finally(()=>{indexWorker?.terminate();indexWorker=null;cancelWork=null;});}
+$('#sync').onclick=async()=>{
+ stop=false;running=true;$('#sync').disabled=$('#connect').disabled=true;$('#stop').disabled=false;$('#errors').replaceChildren();$('#detail').textContent='';let completed=0;
+ const skipped=[];
+ try{
+  do{const d=await api('/api/drive/sync',{});$('#status').textContent='正在掃描書目；尚有 '+d.remaining+' 個資料夾／分頁。';if(!d.remaining)break;}while(!stop);
+  while(!stop){
+   const d=await api('/api/index/next',{skip:skipped});if(!d.job)break;
+   $('#status').textContent='正在準備新 PDF；尚有 '+d.remaining+' 份待處理，本次已完成 '+completed+' 份。';
+   try{await build(d.job);completed++;await refresh();}
+   catch(e){
+    if(stop||e.name==='AbortError')break;
+    if([401,403,503].includes(e.status))throw e;
+    skipped.push(d.job.asset);const item=document.createElement('li');item.textContent=d.job.name+'：'+e.message;$('#errors').append(item);
+    await api('/api/index/error',{job:d.job.id,message:e.message});
+   }
+  }
+  await refresh();$('#status').textContent=stop?'已暫停；下次按同步即可接續。':skipped.length?'已完成可處理的檔案；'+skipped.length+' 份需要處理下方問題後重試。':'同步完成，所有 PDF 已備妥閱讀與下載索引。';
+ }catch(e){$('#status').textContent=e.message+'；修正後可再按同步接續。';}
+ finally{running=false;$('#sync').disabled=$('#connect').disabled=false;$('#stop').disabled=true;$('#progress').hidden=true;$('#detail').textContent='本次完成 '+completed+' 份新 PDF。';}
+};
+$('#stop').onclick=()=>{stop=true;$('#stop').disabled=true;cancelWork?.();};
+addEventListener('beforeunload',event=>{if(running){event.preventDefault();event.returnValue='';}});
 (async()=>{try{me=await api('/api/me');if(!me.admin)throw Error('此頁僅供管理者使用');$('main').hidden=false;$('#status').textContent='登入身分：'+me.email;await refresh();}catch(e){$('#status').textContent=e.message+'；請先回到書庫登入。';}})();
 </script></html>

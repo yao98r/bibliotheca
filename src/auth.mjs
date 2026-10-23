@@ -17,9 +17,9 @@ export async function session(request,env){
  const s=await one(env,'SELECT * FROM sessions WHERE hash=? AND expires>?',await hash(raw),now());if(!s)fail(401,'登入已過期，請重新登入');
  return {...await userFor(env,s.email),csrf:s.csrf,sessionHash:s.hash};
 }
-export async function jsonBody(request){
+export async function jsonBody(request,limit=32768){
  if(!request.headers.get('content-type')?.startsWith('application/json'))fail(415,'請傳送 JSON');
- try{return JSON.parse(new TextDecoder().decode(await bounded(request,32768)));}catch(e){if(e.status)throw e;fail(400,'JSON 格式錯誤');}
+ try{return JSON.parse(new TextDecoder().decode(await bounded(request,limit)));}catch(e){if(e.status)throw e;fail(400,'JSON 格式錯誤');}
 }
 export function csrf(request,body,user,env){
  if(!allowedOrigin(request,env)||body.csrf!==user.csrf)fail(403,'請從本站操作');

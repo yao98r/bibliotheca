@@ -4,6 +4,7 @@ import {syncStep,assetFor,verifyAsset,indexFor,singlePage,fullFile} from './driv
 import {allowedOrigin} from './origins.mjs';
 import {authErrorPage} from './auth-error.mjs';
 import {pdfCatalogEntry} from './catalog.mjs';
+import {nextIndex,indexSource,startIndex,storeIndexPage,finishIndex,indexError} from './indexing.mjs';
 const json=Response.json;
 function admin(u){if(!u.admin)fail(403,'僅管理者可操作');}
 async function bookFor(env,u,id){const b=await one(env,'SELECT * FROM books WHERE id=?',id||'');if(!b)fail(404,'找不到書籍');if(!scopeAllows(u.access_scope,b.category))fail(403,'沒有此分類的使用權限');return {...JSON.parse(b.data),...b};}
@@ -43,7 +44,9 @@ async function handle(request,env,ctx){
    return env.ASSETS.fetch(request);
  }
  if(!['GET','POST'].includes(method))fail(405,'方法不支援');
- const u=await session(request,env),body=method==='POST'?await jsonBody(request):null;
+ const u=await session(request,env);
+ if(p.startsWith('/api/index/'))admin(u);
+ const body=method==='POST'?await jsonBody(request,p==='/api/index/page'?750000:32768):null;
  if(body)csrf(request,body,u,env);
  if(p==='/api/me'&&method==='GET')return json({email:u.email,name:u.display_name||u.google_name,level:u.level,admin:u.admin,csrf:u.csrf,canView:!!u.view_enabled,canDownload:u.download_mode==='download',readingMode:u.reading_mode,dailyLimit:u.daily_download_limit,downloadsToday:(await one(env,'SELECT COUNT(*) n FROM downloads WHERE email=? AND day=?',u.email,day())).n});
  if(p==='/api/logout'&&body){await run(env,'DELETE FROM sessions WHERE hash=?',u.sessionHash);return json({ok:true});}
@@ -74,6 +77,12 @@ async function handle(request,env,ctx){
  if(p==='/api/drive/status'&&method==='GET'){admin(u);const d=await setting(env,'drive'),counts=await one(env,"SELECT COUNT(*) pdfs,COALESCE(SUM(EXISTS(SELECT 1 FROM pdf_headers h WHERE h.size=a.size AND h.md5=a.md5)),0) indexed_count FROM assets a WHERE mime='application/pdf'");return json({configured:!!d,email:d?.email||null,books:(await one(env,'SELECT COUNT(*) n FROM books')).n,pdfs:counts.pdfs,indexed:counts.indexed_count});}
  if(p==='/api/drive/connect'&&body){admin(u);const auth=await beginAuth(request,env,u);return json({authorizationUrl:auth.headers.get('Location')},{headers:{'Set-Cookie':auth.headers.get('Set-Cookie')}});}
  if(p==='/api/drive/sync'&&body){admin(u);return json(await syncStep(env));}
+ if(p==='/api/index/next'&&body)return json(await nextIndex(env,body.skip));
+ if(p==='/api/index/source'&&method==='GET')return indexSource(env,url.searchParams.get('job'));
+ if(p==='/api/index/start'&&body)return json(await startIndex(env,body));
+ if(p==='/api/index/page'&&body)return json(await storeIndexPage(env,body));
+ if(p==='/api/index/finish'&&body)return json(await finishIndex(env,body));
+ if(p==='/api/index/error'&&body)return json(await indexError(env,body));
  if(p==='/api/files'&&method==='GET'){
    const b=await bookFor(env,u,url.searchParams.get('book'));if(!u.view_enabled&&u.download_mode!=='download')fail(403,'只有書目權限');
    const folder=await assetFor(env,b.id,url.searchParams.get('folder')||b.id);if(folder.mime!=='application/vnd.google-apps.folder')fail(400,'不是資料夾');
