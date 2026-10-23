@@ -21,6 +21,14 @@ before(async()=>{
 after(async()=>{await mf?.dispose();});
 const req=(path,token,body,origin='https://books.test')=>new Request('https://books.test'+path,{method:body?'POST':'GET',headers:{...(token?{Authorization:'Bearer '+token}:{}),...(body?{'Content-Type':'application/json',Origin:origin}:{})},body:body?JSON.stringify(body):undefined});
 const call=(...args)=>worker.fetch(req(...args),env,{});
+test('root serves index without redirecting or changing the browser path',async()=>{
+ const r=await worker.fetch(new Request('https://books.test/?login_callback=1'),{...env,ASSETS:{fetch:r=>new Response(new URL(r.url).pathname)}},{});
+ assert.equal(r.status,200);assert.equal(await r.text(),'/index.html');
+});
+test('D1 daily limit returns actionable retry time without exposing database errors',async()=>{
+ const unavailable={...env,DB:{prepare(){throw Error("D1_ERROR: Your account has exceeded D1's free tier daily row write limit.");}}};
+ const r=await worker.fetch(req('/api/me',ownerToken),unavailable,{});assert.equal(r.status,503);assert.ok(Number(r.headers.get('Retry-After'))>0);assert.match((await r.json()).error,/08:00/);
+});
 test('anonymous users cannot enumerate books, users, traces or files',async()=>{for(const path of ['/api/books','/api/allowlist','/api/traces','/file?ticket='+random()])assert.equal((await call(path)).status,401);});
 test('reader cannot read or modify admin settings',async()=>{assert.equal((await call('/api/allowlist',userToken)).status,403);assert.equal((await call('/api/access-policy',userToken,{csrf:'test-csrf',enabled:true})).status,403);});
 test('CSRF rejects foreign origin even with a valid bearer token',async()=>{assert.equal((await call('/api/logout',userToken,{csrf:'test-csrf'},'https://evil.test')).status,403);});

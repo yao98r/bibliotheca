@@ -14,7 +14,9 @@ export async function syncStep(env){
    task=await one(env,'SELECT * FROM scan ORDER BY id LIMIT 1');
  }
  if(!validId(task.id))fail(400,'資料夾設定無效');
- const q=new URLSearchParams({q:`'${task.id}' in parents and trashed = false`,pageSize:'100',fields:'nextPageToken,files(id,name,mimeType,size,md5Checksum)',...(task.page_token?{pageToken:task.page_token}:{})});
+ // A batch of 10 stays below the free Workers plan's 50 D1 queries per request,
+ // including folders, authentication, queue state and counts.
+ const q=new URLSearchParams({q:`'${task.id}' in parents and trashed = false`,pageSize:'10',fields:'nextPageToken,files(id,name,mimeType,size,md5Checksum)',...(task.page_token?{pageToken:task.page_token}:{})});
  const data=await (await drive(env,'files?'+q,token)).json(),statements=[];
  for(const f of data.files||[]){
    if(![FOLDER,'application/pdf'].includes(f.mimeType))continue;

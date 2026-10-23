@@ -37,6 +37,7 @@ async function handle(request,env,ctx){
    if(!['GET','HEAD'].includes(method))fail(405,'方法不支援');
    const aliases={'/go':'/go.html','/files':'/files.html','/access':'/access.html','/viewer':'/viewer.html'};
    if(aliases[p])return Response.redirect(url.origin+aliases[p]+url.search,302);
+   if(p==='/')return env.ASSETS.fetch(new Request(url.origin+'/index.html'+url.search,request));
    return env.ASSETS.fetch(request);
  }
  if(!['GET','POST'].includes(method))fail(405,'方法不支援');
@@ -114,7 +115,12 @@ export default {async fetch(request,env,ctx){
    if(!allowedOrigin(request,env))fail(403,'來源不允許');
    response=new Response(null,{status:204,headers:{'Access-Control-Allow-Methods':'GET, POST, OPTIONS','Access-Control-Allow-Headers':'Authorization, Content-Type','Access-Control-Max-Age':'600'}});
  }else response=await handle(request,env,ctx);
- }catch(e){const status=e.status||500;if(status===500)console.error(JSON.stringify({event:'request_failed',path:new URL(request.url).pathname,type:e.name}));response=json({error:status===500?'服務暫時無法完成操作':e.message},{status});}
+ }catch(e){
+ const limited=/exceeded D1's free tier daily/.test(e.message||'');
+ const status=limited?503:(e.status||500);
+ if(status===500)console.error(JSON.stringify({event:'request_failed',path:new URL(request.url).pathname,type:e.name}));
+ response=json({error:limited?'Cloudflare 今日免費資料庫額度已用完，台灣時間上午 08:00 重置後可重試。':status===500?'服務暫時無法完成操作':e.message},{status,...(limited?{headers:{'Retry-After':String(86400-now()%86400)}}:{})});
+ }
  const h=new Headers(response.headers);h.set('X-Content-Type-Options','nosniff');h.set('Referrer-Policy','no-referrer');h.set('X-Frame-Options','DENY');
  if(allowedOrigin(request,env)){h.set('Access-Control-Allow-Origin',request.headers.get('Origin'));h.set('Access-Control-Expose-Headers','Content-Disposition');}
  h.append('Vary','Origin');
