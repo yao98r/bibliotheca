@@ -56,6 +56,10 @@ At download time the Cloudflare Worker reads one small template row, personalize
 
 Preparation stores one compressed row per distinct source size/checksum in `pdf_watermarks`, with an atomic 100 MiB application budget for template data. It does not rewrite existing `pdf_pages`. Completed files and identical copies are reused; pause/resume is safe. Hitting the application budget returns an actionable error and does not upgrade a plan. Source parsing and template upload endpoints require the existing owner session and CSRF protection. Templates, source PDFs, personal records and credentials remain outside this public repository.
 
+Composition templates require compiler revision 2. Single-stream and array-based PDF contents retain their indirect references, repeated source streams use distinct forward byte ranges, and blank pages may omit resources. Templates from an earlier compiler must be marked stale and rebuilt before strict mode is enabled. Regression tests parse the composed single-stream PDF with PDF.js and ensure repeated binary content does not inflate D1 metadata.
+
+Drive access tokens are reused only inside the Worker isolate, until 60 seconds before their reported expiry, with at most two cached connections. Concurrent refreshes coalesce. Every request still checks the current Drive connection in D1; disconnect, reauthorization, client-secret rotation and encryption-key rotation cannot reuse an obsolete entry. Failed refreshes and responses without a usable token lifetime are not cached.
+
 Roll out in this order:
 
 1. Apply migrations through `0005.sql` to the existing D1 database. No new Cloudflare service or billing plan is required.

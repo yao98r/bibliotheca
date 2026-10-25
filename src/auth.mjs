@@ -1,7 +1,9 @@
 import {createRemoteJWKSet,jwtVerify} from 'jose';
 import {allowedOrigin,loginReturn} from './origins.mjs';
 import {fail,random,hash,now,iso,permission,bounded,seal,unseal} from './core.mjs';
+import {createDriveTokenCache} from './drive-token-cache.mjs';
 const jwks=createRemoteJWKSet(new URL('https://www.googleapis.com/oauth2/v3/certs'));
+const cachedDriveToken=createDriveTokenCache();
 export const one=(env,sql,...v)=>env.DB.prepare(sql).bind(...v).first();
 export const run=(env,sql,...v)=>env.DB.prepare(sql).bind(...v).run();
 export const rows=async(env,sql,...v)=>(await env.DB.prepare(sql).bind(...v).all()).results;
@@ -31,8 +33,10 @@ export async function googleToken(env,params){
 export async function driveToken(env){
  if(!env.TOKEN_ENCRYPTION_KEY)fail(503,'尚未設定憑證加密金鑰');
  const stored=await setting(env,'drive');if(!stored||stored.email!==env.OWNER_EMAIL)fail(503,'管理者尚未連接 Google Drive');
- const token=await googleToken(env,{grant_type:'refresh_token',refresh_token:await unseal(stored.refresh,env.TOKEN_ENCRYPTION_KEY)});
- return token.access_token;
+ // Still read and validate the current connection for every request. A changed
+ // refresh token, client secret or encryption key cannot reuse an old entry.
+ const key=JSON.stringify([stored.refresh,env.GOOGLE_CLIENT_ID,env.GOOGLE_CLIENT_SECRET,env.TOKEN_ENCRYPTION_KEY]);
+ return cachedDriveToken(key,async()=>googleToken(env,{grant_type:'refresh_token',refresh_token:await unseal(stored.refresh,env.TOKEN_ENCRYPTION_KEY)}));
 }
 export async function beginAuth(request,env,driveUser=null){
  if(!env.GOOGLE_CLIENT_ID||!env.GOOGLE_CLIENT_SECRET)fail(503,'請先設定 Google OAuth 用戶端');

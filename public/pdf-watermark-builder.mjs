@@ -21,7 +21,7 @@ export async function compileWatermarkedPdf(source,expected,{PDFLib,SparkMD5,onP
  for(const [index,page] of pages.entries()){
   const crop=page.getCropBox(),rotation=((page.getRotation().angle%360)+360)%360;
   if(![0,90,180,270].includes(rotation))throw Error('不支援的 PDF 旋轉角度');
-  const resources=page.node.Resources().clone(doc.context);
+  const resources=page.node.Resources()?.clone(doc.context)||doc.context.obj({});
   const existing=resources.lookupMaybe(name('XObject'),PDFLib.PDFDict),xobjects=existing?existing.clone(doc.context):doc.context.obj({});
   let key='BibliothecaEdge';while(xobjects.has(name(key)))key+='_';
   xobjects.set(name(key),form);resources.set(name('XObject'),xobjects);page.node.set(name('Resources'),resources);
@@ -33,7 +33,10 @@ export async function compileWatermarkedPdf(source,expected,{PDFLib,SparkMD5,onP
   // Isolate arbitrary graphics state left by the source before adding the mark.
   const before=doc.context.register(doc.context.stream('q\n'));
   const after=doc.context.register(doc.context.stream(`Q\nq\n${matrix.map(n=>Number(n.toFixed(4))).join(' ')} cm\n/${key} Do\nQ\n`));
-  const old=page.node.Contents(),contents=old instanceof PDFLib.PDFArray?old.asArray():old?[old]:[];
+  // Preserve indirect stream references. Contents() dereferences a single
+  // stream, which would embed its binary bytes illegally inside this array.
+  const old=page.node.get(name('Contents')),resolved=doc.context.lookup(old);
+  const contents=resolved instanceof PDFLib.PDFArray?resolved.asArray():old?[old]:[];
   page.node.set(name('Contents'),doc.context.obj([before,...contents,after]));
   page.node.set(name('BibliothecaTrace'),PDFString.of(CODE_PLACEHOLDER));
   page.node.set(name('BibliothecaInvisibleTrace'),PDFHexString.of(hidden));
@@ -41,10 +44,11 @@ export async function compileWatermarkedPdf(source,expected,{PDFLib,SparkMD5,onP
  }
  const info=doc.context.obj({BibliothecaTrace:PDFString.of(CODE_PLACEHOLDER),BibliothecaProof:PDFString.of(PROOF_PLACEHOLDER),BibliothecaWatermarkVersion:PDFString.of('server-v2'),BibliothecaSourceMD5:PDFString.of(md5),BibliothecaSourceBytes:PDFNumber.of(source.length)});
  const infoRef=doc.context.register(info),root=doc.context.trailerInfo.Root;
- const locate=streamLocator(source,SparkMD5),literal=[],ranged=[];
+ const locate=streamLocator(source,SparkMD5),literal=[],ranged=[],usedOffsets=new Set();
  for(const [ref,object] of doc.context.enumerateIndirectObjects()){
   if(ref.objectNumber>200000)throw Error('PDF 物件編號過大，請重新匯出');
-  const offset=object instanceof PDFRawStream&&object.contents.length>=256?locate(object.contents):-1;
+  const offset=object instanceof PDFRawStream&&object.contents.length>=256?locate(object.contents,usedOffsets):-1;
+  if(offset>=0)usedOffsets.add(offset);
   (offset>=0?ranged:literal).push({ref,object,offset});
  }
  ranged.sort((a,b)=>a.offset-b.offset);let previousEnd=0;
@@ -73,5 +77,5 @@ export async function compileWatermarkedPdf(source,expected,{PDFLib,SparkMD5,onP
  const proofs=locations(meta,`/BibliothecaProof (${PROOF_PLACEHOLDER})`).map(i=>i+'/BibliothecaProof ('.length);
  const invisible=locations(meta,`/BibliothecaInvisibleTrace <${hidden}>`).map(i=>i+'/BibliothecaInvisibleTrace <'.length),barcodes=locations(meta,BARCODE_PLACEHOLDER);
  if(codes.length!==pages.length+1||proofs.length!==1||invisible.length!==pages.length||barcodes.length!==1)throw Error('PDF 水印樣板位置不符');
- return {version:WATERMARK_VERSION,sourceSize:source.length,sourceMd5:md5,pages:pages.length,length:outputLength,metadata:base64(meta),segments,slots:{codes,proof:proofs[0],invisible,barcode:barcodes[0]}};
+ return {version:WATERMARK_VERSION,compilerRevision:2,sourceSize:source.length,sourceMd5:md5,pages:pages.length,length:outputLength,metadata:base64(meta),segments,slots:{codes,proof:proofs[0],invisible,barcode:barcodes[0]}};
 }

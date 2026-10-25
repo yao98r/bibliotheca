@@ -16,10 +16,12 @@ function streamOffsets(bytes){
 function sameBytes(source,offset,bytes){if(offset+bytes.length>source.length)return false;for(let i=0;i<bytes.length;i++)if(source[offset+i]!==bytes[i])return false;return true;}
 export function streamLocator(source,SparkMD5){
  const offsets=streamOffsets(source),cache=new Map();
- return data=>{
+ return (data,usedOffsets)=>{
   const signature=SparkMD5.ArrayBuffer.hash(data.buffer.slice(data.byteOffset,data.byteOffset+data.byteLength));
-  if(cache.has(signature)){const offset=cache.get(signature);if(offset<0||sameBytes(source,offset,data))return offset;}
-  const offset=(offsets.get(key(data))||[]).find(p=>sameBytes(source,p,data))??-1;cache.set(signature,offset);return offset;
+  if(!usedOffsets&&cache.has(signature)){const offset=cache.get(signature);if(offset<0||sameBytes(source,offset,data))return offset;}
+  const candidates=offsets.get(key(data))||[];
+  const offset=candidates.find(p=>(!usedOffsets||!usedOffsets.has(p))&&sameBytes(source,p,data))??-1;
+  if(!usedOffsets)cache.set(signature,offset);return offset;
  };
 }
 export async function preparePdf(source,expected,{PDFLib,SparkMD5}){

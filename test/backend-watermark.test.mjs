@@ -77,3 +77,30 @@ test('native Worker source failures never produce a complete PDF or matching byt
   }
  }finally{await mf.dispose();}
 });
+
+
+test('single indirect content streams remain references and repeated binary streams stay out of template metadata',async()=>{
+ const doc=await PDFLib.PDFDocument.create({updateMetadata:false});
+ const page=doc.addPage([300,400]);page.drawText('SINGLE INDIRECT CONTENT',{x:20,y:300,size:12});
+ const contents=page.node.Contents();page.node.set(PDFLib.PDFName.of('Contents'),contents.get(0));
+ const payload=randomBytes(600000);
+ for(let i=0;i<2;i++)doc.context.register(PDFLib.PDFRawStream.of(doc.context.obj({Length:payload.length}),payload.slice()));
+ const input=await doc.save({useObjectStreams:false}),asset={size:input.length,md5:SparkMD5.ArrayBuffer.hash(input.buffer)};
+ const plan=await compileWatermarkedPdf(input,asset,{PDFLib,SparkMD5}),template=validateWatermarkTemplate(plan,asset);
+ assert.ok(template.metadata.length<20000);assert.ok(gzipSync(JSON.stringify(plan)).length<10000);
+ const bytes=new Uint8Array(await new Response(composeWatermarkedPdf(stream(input),asset,template,personalizeWatermark(template,'ABCD-EFGH','1'.repeat(64)))).arrayBuffer());
+ const loaded=await PDFLib.PDFDocument.load(bytes,{throwOnInvalidObject:true});
+ for(const entry of loaded.getPage(0).node.Contents().asArray())assert.ok(entry instanceof PDFLib.PDFRef);
+ const task=getDocument({data:bytes.slice(),useSystemFonts:true,isEvalSupported:false});
+ try{const page=await (await task.promise).getPage(1);assert.ok((await page.getTextContent()).items.some(x=>x.str.includes('SINGLE INDIRECT CONTENT')));assert.ok((await page.getOperatorList()).fnArray.length>20);}finally{await task.destroy();}
+ const stale=structuredClone(plan);delete stale.compilerRevision;assert.throws(()=>validateWatermarkTemplate(stale,asset),e=>e.status===400);
+});
+
+
+test('blank pages with no inherited Resources remain valid after backend watermarking',async()=>{
+ const doc=await PDFLib.PDFDocument.create({updateMetadata:false}),page=doc.addPage([300,400]);page.node.delete(PDFLib.PDFName.of('Resources'));
+ const source=await doc.save({useObjectStreams:false}),asset={size:source.length,md5:SparkMD5.ArrayBuffer.hash(source.buffer)};
+ const plan=await compileWatermarkedPdf(source,asset,{PDFLib,SparkMD5}),template=validateWatermarkTemplate(plan,asset);
+ const bytes=new Uint8Array(await new Response(composeWatermarkedPdf(stream(source),asset,template,personalizeWatermark(template,'ABCD-EFGH','1'.repeat(64)))).arrayBuffer());
+ const task=getDocument({data:bytes.slice(),isEvalSupported:false});try{const page=await (await task.promise).getPage(1);assert.equal((await page.getTextContent()).items.length,0);assert.ok((await page.getOperatorList()).fnArray.length>10);}finally{await task.destroy();}
+});

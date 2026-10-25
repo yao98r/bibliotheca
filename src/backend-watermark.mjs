@@ -5,7 +5,7 @@ const encoder=new TextEncoder();
 const keys=new Map(),templates=new Map();let templateWeight=0;
 const same=(bytes,at,text)=>{const expected=encoder.encode(text);return expected.every((v,i)=>bytes[at+i]===v);};
 export function validateWatermarkTemplate(plan,asset){
- if(!plan||plan.version!==WATERMARK_VERSION||plan.sourceSize!==asset.size||plan.sourceMd5!==asset.md5||!Number.isInteger(plan.pages)||plan.pages<1||plan.pages>10000||!Number.isSafeInteger(plan.length)||plan.length<1||plan.length>asset.size+MAX_TEMPLATE_BYTES||typeof plan.metadata!=='string'||plan.metadata.length>MAX_TEMPLATE_BYTES*1.4||!Array.isArray(plan.segments)||plan.segments.length>100000)fail(400,'PDF 合成樣板無效');
+ if(!plan||plan.version!==WATERMARK_VERSION||plan.compilerRevision!==2||plan.sourceSize!==asset.size||plan.sourceMd5!==asset.md5||!Number.isInteger(plan.pages)||plan.pages<1||plan.pages>10000||!Number.isSafeInteger(plan.length)||plan.length<1||plan.length>asset.size+MAX_TEMPLATE_BYTES||typeof plan.metadata!=='string'||plan.metadata.length>MAX_TEMPLATE_BYTES*1.4||!Array.isArray(plan.segments)||plan.segments.length>100000)fail(400,'PDF 合成樣板無效');
  const metadata=unb64(plan.metadata),slots=plan.slots;if(metadata.length>MAX_TEMPLATE_BYTES||!slots||!Array.isArray(slots.codes)||slots.codes.length!==plan.pages+1||!Array.isArray(slots.invisible)||slots.invisible.length!==plan.pages)fail(400,'PDF 水印位置無效');
  const reserved=[];
  function slot(at,text){if(!Number.isSafeInteger(at)||at<0||at+text.length>metadata.length||!same(metadata,at,text))fail(400,'PDF 水印預留空間不符');reserved.push([at,at+text.length]);}
