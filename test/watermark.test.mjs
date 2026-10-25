@@ -5,14 +5,14 @@ import * as PDFLib from 'pdf-lib';
 import {getDocument} from 'pdfjs-dist/legacy/build/pdf.mjs';
 import {stampPdf,extractTrace,validTrace,paintTrace,encodeCode39} from '../public/trace-watermark.mjs';
 
-test('download preserves original content with separate barcode and unlabelled code in a new right gutter',async()=>{
+test('watermarked PDF preserves page boxes, rotation and original text with a subtle edge barcode',async()=>{
  const source=await PDFLib.PDFDocument.create(),crops=[];for(let n=1;n<=4;n++){const p=source.addPage(n===2?[842,595]:[595,842]);p.drawText('Original content page '+n,{x:40,y:80,size:20});p.setRotation(PDFLib.degrees((n-1)*90));const {width,height}=p.getSize();p.setCropBox(10,20,width-30,height-40);crops.push(p.getCropBox());}
  const bytes=await source.save(),original=bytes.slice(),progress=[];
  const marked=await stampPdf(bytes,'ABCD-EFGH',{PDFLib,onProgress:(n,total)=>progress.push([n,total])});assert.deepEqual(bytes,original);
- const doc=await PDFLib.PDFDocument.load(marked),key=PDFLib.PDFName.of('BibliothecaTrace');assert.equal(doc.getPageCount(),4);for(const [i,page] of doc.getPages().entries()){assert.equal(page.node.get(key).decodeText(),'ABCD-EFGH');const before=crops[i],after=page.getCropBox();assert.deepEqual(after,{x:before.x-(i===2?24:0),y:before.y-(i===3?24:0),width:before.width+(i%2===0?24:0),height:before.height+(i%2===1?24:0)});assert.equal(page.getRotation().angle,i*90);}
+ const doc=await PDFLib.PDFDocument.load(marked),key=PDFLib.PDFName.of('BibliothecaTrace');assert.equal(doc.getPageCount(),4);for(const [i,page] of doc.getPages().entries()){assert.equal(page.node.get(key).decodeText(),'ABCD-EFGH');const before=crops[i],after=page.getCropBox();assert.deepEqual(after,before);assert.equal(page.getRotation().angle,i*90);}
  assert.equal(doc.context.lookup(doc.context.trailerInfo.Info).get(key).decodeText(),'ABCD-EFGH');assert.deepEqual(progress.at(-1),[4,4]);
  const task=getDocument({data:marked.slice(),useSystemFonts:true,isEvalSupported:false});const pdf=await task.promise;
- try{for(let n=1;n<=4;n++){const page=await pdf.getPage(n),text=(await page.getTextContent()).items.map(i=>i.str).join(' ');assert.ok(text.includes('Original content page '+n));assert.equal(text.match(/ABCD-EFGH/g)?.length,1);assert.ok(!/Bibliotheca|AUTH|of 4/.test(text));const operators=await page.getOperatorList();assert.ok(operators.fnArray.length>encodeCode39('ABCD-EFGH').bars.length);}}finally{await task.destroy();}
+ try{for(let n=1;n<=4;n++){const page=await pdf.getPage(n),text=(await page.getTextContent()).items.map(i=>i.str).join(' ');assert.ok(text.includes('Original content page '+n));assert.equal(text.includes('ABCD-EFGH'),false);assert.ok(!/Bibliotheca|AUTH|of 4/.test(text));const operators=await page.getOperatorList();assert.ok(operators.fnArray.length>encodeCode39('ABCD-EFGH').bars.length);}}finally{await task.destroy();}
  assert.equal(await extractTrace(new Blob([marked]),async()=>PDFLib),'ABCD-EFGH');
  await assert.rejects(stampPdf(bytes,'invalid',{PDFLib}),/授權碼無效/);assert.equal(validTrace('ABCD-EFGH'),true);
 });
@@ -25,17 +25,18 @@ test('Code 39 bars independently decode to the code and Mod43 checksum with quie
  assert.equal(decoded,'*ABCD-EFGHF*');assert.throws(()=>encodeCode39('invalid'),/授權碼無效/);
 });
 
-test('reader preserves the canvas and varies separated barcode/text positions by page inside the new gutter',()=>{
- const placements=[];
+test('reader adds a subtle edge barcode without resizing or redrawing original content',()=>{
+ const positions=[];
  for(let page=1;page<=4;page++){
-  const calls=[],c={save(){},restore(){},drawImage(...v){calls.push(['image',...v]);},fillRect(...v){calls.push(['rect',...v]);},measureText(){return {width:45};},translate(...v){calls.push(['translate',...v]);},rotate(v){calls.push(['rotate',v]);},fillText(...v){calls.push(['text',...v]);}};
-  const backup={getContext:()=>c},canvas={width:1000,height:1400,style:{width:'500px'},ownerDocument:{createElement:()=>backup},getContext:()=>c};paintTrace(canvas,'ABCD-EFGH',page,5);
-  assert.equal(canvas.width,1041);assert.equal(canvas.style.width,'520.5px');assert.equal(calls.filter(v=>v[0]==='image').length,2);
-  const rects=calls.filter(v=>v[0]==='rect').slice(1);assert.equal(rects.length,encodeCode39('ABCD-EFGH').bars.length);for(const r of rects){assert.ok(r[1]>=1000);assert.ok(r[1]+r[3]<=canvas.width);assert.ok(r[2]>=0&&r[2]+r[4]<=canvas.height);}
-  assert.deepEqual(calls.filter(v=>v[0]==='text'),[['text','ABCD-EFGH',0,0]]);assert.equal(calls.find(v=>v[0]==='rotate')[1],Math.PI/2);
-  const translate=calls.find(v=>v[0]==='translate');assert.ok(translate[1]>1000);assert.ok(Math.abs(rects[0][2]-translate[2])>300);placements.push(rects[0][2]);
+  const calls=[],c={save(){},restore(){},fillRect(...v){calls.push(v);}};
+  const canvas={width:1000,height:1400,style:{width:'500px'},getContext:()=>c};
+  paintTrace(canvas,'ABCD-EFGH',page,5);
+  assert.equal(canvas.width,1000);assert.equal(canvas.height,1400);assert.equal(canvas.style.width,'500px');
+  assert.equal(c.fillStyle,'#ccc');assert.equal(calls.length,encodeCode39('ABCD-EFGH').bars.length);
+  for(const [x,y,w,h] of calls){assert.ok(x>990&&x+w<=1000);assert.ok(y>=0&&y+h<=1400);assert.ok(w<3);}
+  positions.push(calls[0][1]);
  }
- assert.equal(new Set(placements).size,4);
+ assert.equal(new Set(positions).size,4);
 });
 
 test('trace extraction retains original octal-hyphen downloads and missing codes return null',async()=>{
