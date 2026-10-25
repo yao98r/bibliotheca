@@ -32,44 +32,56 @@ function placement(code,page,length,height,textLength){
 }
 export function paintTrace(canvas,code,page,total){
  if(!validTrace(code))throw Error('閱覽授權碼無效，請重新開啟書籍。');
- const originalWidth=canvas.width,height=canvas.height,scale=originalWidth/595,gutter=Math.ceil(24*scale),backup=canvas.ownerDocument.createElement('canvas');
- backup.width=originalWidth;backup.height=height;backup.getContext('2d').drawImage(canvas,0,0);
- const cssWidth=parseFloat(canvas.style.width);canvas.width=originalWidth+gutter;
- if(Number.isFinite(cssWidth))canvas.style.width=cssWidth*canvas.width/originalWidth+'px';
- const c=canvas.getContext('2d');c.fillStyle='#fff';c.fillRect(0,0,canvas.width,height);c.drawImage(backup,0,0);
- const barcode=encodeCode39(code),unit=Math.min(.7*scale,height*.45/barcode.units),barWidth=8*scale,size=5*scale;
- c.save();c.fillStyle='#777';c.font=`${size}px sans-serif`;
- const where=placement(code,page,barcode.units*unit,height,c.measureText(code).width);
- for(const bar of barcode.bars)c.fillRect(originalWidth+5*scale,where.barcode+bar.position*unit,barWidth,bar.width*unit);
- c.translate(originalWidth+19*scale,where.text);c.rotate(Math.PI/2);c.fillText(code,0,0);c.restore();
+ const scale=canvas.width/595,height=canvas.height,c=canvas.getContext('2d');
+ const barcode=encodeCode39(code),unit=Math.min(.35*scale,height*.2/barcode.units);
+ const where=placement(code,page,barcode.units*unit,height,0);
+ c.save();c.fillStyle='#ccc';
+ for(const bar of barcode.bars)c.fillRect(canvas.width-2.5*scale,where.barcode+bar.position*unit,1.3*scale,bar.width*unit);
+ c.restore();
 }
-export async function stampPdf(bytes,code,{PDFLib,onProgress=()=>{}}){
+export function zeroWidthTrace(code){
+ if(!validTrace(code))throw Error('授權碼無效。');
+ return '\u2063'+Array.from(new TextEncoder().encode(code),byte=>byte.toString(2).padStart(8,'0').replaceAll('0','\u200b').replaceAll('1','\u200c')).join('')+'\u2063';
+}
+export async function stampPdf(bytes,code,{PDFLib,onProgress=()=>{},maxPages=Infinity,pageOffset=0,hiddenTrace=false}){
  if(!validTrace(code))throw Error('下載授權碼無效，請重新取得下載入口。');
- const {PDFDocument,StandardFonts,rgb,degrees,PDFName,PDFString}=PDFLib;
+ const {PDFDocument,StandardFonts,rgb,PDFName,PDFString,PDFHexString,PDFOperator}=PDFLib;
  const doc=await PDFDocument.load(bytes,{updateMetadata:false,throwOnInvalidObject:true});
  if(doc.isEncrypted)throw Error('無法加入水印：PDF 已加密。');
  const font=await doc.embedFont(StandardFonts.Helvetica),pages=doc.getPages(),barcode=encodeCode39(code);
+ if(pages.length>maxPages)throw Error('PDF 頁數超過免費後端合成上限，請先分冊。');
  for(const [index,page] of pages.entries()){
-  const crop=page.getCropBox(),media=page.getMediaBox(),rotation=((page.getRotation().angle%360)+360)%360,gutter=24;
+  const crop=page.getCropBox(),rotation=((page.getRotation().angle%360)+360)%360;
   if(![0,90,180,270].includes(rotation))throw Error('PDF 頁面旋轉角度不支援。');
-  const horizontal=rotation===90||rotation===270,height=horizontal?crop.width:crop.height,unit=Math.min(.7,height*.45/barcode.units),size=5;
-  const where=placement(code,index+1,barcode.units*unit,height,font.widthOfTextAtSize(code,size));
-  const extended={...crop};if(rotation===0)extended.width+=gutter;if(rotation===90)extended.height+=gutter;if(rotation===180){extended.x-=gutter;extended.width+=gutter;}if(rotation===270){extended.y-=gutter;extended.height+=gutter;}
-  const left=Math.min(media.x,extended.x),bottom=Math.min(media.y,extended.y),right=Math.max(media.x+media.width,extended.x+extended.width),top=Math.max(media.y+media.height,extended.y+extended.height);
-  page.setMediaBox(left,bottom,right-left,top-bottom);page.setCropBox(extended.x,extended.y,extended.width,extended.height);
-  // Opaque white gutter prevents existing off-crop content showing through.
-  const x=rotation===0?crop.x+crop.width:rotation===180?crop.x-gutter:crop.x;
-  const y=rotation===90?crop.y+crop.height:rotation===270?crop.y-gutter:crop.y;
-  page.drawRectangle({x,y,width:horizontal?crop.width:gutter,height:horizontal?gutter:crop.height,color:rgb(1,1,1)});
-  const color=rgb(.47,.47,.47),side=rotation===0?crop.x+crop.width:rotation===180?crop.x-gutter:rotation===90?crop.y+crop.height:crop.y-gutter;
-  for(const bar of barcode.bars)page.drawRectangle(horizontal?{x:crop.x+where.barcode+bar.position*unit,y:side+5,width:bar.width*unit,height:8,color}:{x:side+5,y:crop.y+where.barcode+bar.position*unit,width:8,height:bar.width*unit,color});
-  page.drawText(code,horizontal?{x:crop.x+where.text,y:side+19,font,size,color}:{x:side+19,y:crop.y+where.text,font,size,color,rotate:degrees(90)});
+  const horizontal=rotation===90||rotation===270,height=horizontal?crop.width:crop.height,unit=Math.min(.35,height*.2/barcode.units);
+  const where=placement(code,pageOffset+index+1,barcode.units*unit,height,0),color=rgb(.8,.8,.8);
+  // Keep every page box and all original content unchanged. The subtle mark
+  // occupies only 1.3 pt inside the existing displayed right edge.
+  for(const bar of barcode.bars){
+   const along=where.barcode+bar.position*unit,thickness=bar.width*unit;
+   const box=rotation===0?{x:crop.x+crop.width-2.5,y:crop.y+along,width:1.3,height:thickness}
+    :rotation===90?{x:crop.x+along,y:crop.y+crop.height-2.5,width:thickness,height:1.3}
+    :rotation===180?{x:crop.x+1.2,y:crop.y+crop.height-along-thickness,width:1.3,height:thickness}
+    :{x:crop.x+crop.width-along-thickness,y:crop.y+1.2,width:thickness,height:1.3};
+   page.drawRectangle({...box,color});
+  }
   page.node.set(PDFName.of('BibliothecaTrace'),PDFString.of(code));
+  if(hiddenTrace){
+   // Auxiliary extraction marker only. Readers may normalize or discard it;
+   // scanned pages do not acquire a genuine OCR text layer from this marker.
+   const invisible=zeroWidthTrace(code);
+   page.node.set(PDFName.of('BibliothecaInvisibleTrace'),PDFHexString.fromText(invisible));
+   for(let n=1;n<=3;n++){
+    page.pushOperators(PDFOperator.of('BDC',[PDFName.of('Span'),doc.context.obj({ActualText:PDFHexString.fromText(invisible)})]));
+    page.drawText(' ',{x:crop.x+10,y:crop.y+crop.height*n/4,font,size:1,opacity:0});
+    page.pushOperators(PDFOperator.of('EMC'));
+   }
+  }
   if(index%20===0||index===pages.length-1){onProgress(index+1,pages.length);await new Promise(resolve=>setTimeout(resolve,0));}
  }
  const infoRef=doc.context.trailerInfo.Info;
  const info=infoRef?doc.context.lookup(infoRef):doc.context.obj({});
- info.set(PDFName.of('BibliothecaTrace'),PDFString.of(code));info.set(PDFName.of('BibliothecaWatermarkVersion'),PDFString.of('4'));
+ info.set(PDFName.of('BibliothecaTrace'),PDFString.of(code));info.set(PDFName.of('BibliothecaWatermarkVersion'),PDFString.of('5'));
  if(!infoRef)doc.context.trailerInfo.Info=doc.context.register(info);
  return doc.save({useObjectStreams:false,addDefaultPage:false,updateFieldAppearances:false});
 }
