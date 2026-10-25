@@ -3,7 +3,7 @@ export const fail=(status,message)=>{throw new HttpError(status,message);};
 export const now=()=>Math.floor(Date.now()/1000);
 export const iso=()=>new Date().toISOString();
 export const b64=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replaceAll('+','-').replaceAll('/','_').replaceAll('=','');
-export const unb64=s=>Uint8Array.from(atob(s.replaceAll('-','+').replaceAll('_','/')),c=>c.charCodeAt(0));
+export function unb64(s){const text=atob(s.replaceAll('-','+').replaceAll('_','/')),bytes=new Uint8Array(text.length);for(let i=0;i<text.length;i++)bytes[i]=text.charCodeAt(i);return bytes;}
 export const random=()=>b64(crypto.getRandomValues(new Uint8Array(32)));
 export const hash=async s=>b64(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s)));
 export const day=()=>new Date(Date.now()+8*3600000).toISOString().slice(0,10);

@@ -24,8 +24,8 @@ const mf=new Miniflare({modules:true,script:bundled,compatibilityDate:'2026-07-0
  if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'fixture'});
  if(url.pathname==='/drive/v3/files/'+asset.id){
   if(url.searchParams.get('alt')!=='media')return Response.json({size:asset.size,md5Checksum:asset.md5,parents:[root]});
-  mediaRequests++;let at=0;
-  return new Response(new ReadableStream({pull(c){if(at===source.length){c.close();return;}const end=Math.min(source.length,at+65536);c.enqueue(source.subarray(at,end));at=end;}}),{headers:{'Content-Length':String(source.length)}});
+  mediaRequests++;const range=request.headers.get('Range'),match=range?.match(/^bytes=(\d+)-(\d+)$/);let at=match?Number(match[1]):0;const limit=match?Number(match[2])+1:source.length;
+  return new Response(new ReadableStream({pull(c){if(at===limit){c.close();return;}const end=Math.min(limit,at+65536);c.enqueue(source.subarray(at,end));at=end;}}),{status:match?206:200,headers:{'Content-Length':String(limit-(match?Number(match[1]):0)),...(match?{'Content-Range':`bytes ${match[1]}-${match[2]}/${source.length}`}:{})}});
  }
  throw Error('Unexpected external request '+url.pathname);
 }});

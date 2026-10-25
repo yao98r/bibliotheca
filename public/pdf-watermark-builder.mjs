@@ -8,6 +8,53 @@ function locations(bytes,text){
  outer:for(let i=0;i<=bytes.length-needle.length;i++){if(bytes[i]!==needle[0])continue;for(let j=1;j<needle.length;j++)if(bytes[i+j]!==needle[j])continue outer;out.push(i);i+=needle.length-1;}
  return out;
 }
+
+function originalStreamSpan(source,ref,object,offset,PDFLib,context){
+ const text=new TextDecoder('latin1').decode(source.subarray(Math.max(0,offset-65536),offset));
+ const header=new RegExp('(?:^|[\\x00\\t\\n\\f\\r ])('+ref.objectNumber+'[\\x00\\t\\n\\f\\r ]+'+ref.generationNumber+'[\\x00\\t\\n\\f\\r ]+obj)\\b','g');
+ const matches=[...text.matchAll(header)],base=Math.max(0,offset-65536);
+ let stream=offset;if(source[stream-1]===10)stream--;if(source[stream-1]===13)stream--;stream-=6;
+ if(new TextDecoder().decode(source.subarray(stream,stream+6))!=='stream')return null;
+ for(const match of matches.reverse()){
+  const start=base+match.index+match[0].length-match[1].length,dictStart=base+match.index+match[0].length;
+  try{const dict=PDFLib.PDFObjectParser.forBytes(source.subarray(dictStart,stream),context).parseObject();if(!(dict instanceof PDFLib.PDFDict)||dict.toString()!==object.dict.toString())continue;}catch{continue;}
+  let end=offset+object.contents.length;while([0,9,10,12,13,32].includes(source[end]))end++;
+  if(new TextDecoder().decode(source.subarray(end,end+9))!=='endstream')continue;end+=9;while([0,9,10,12,13,32].includes(source[end]))end++;
+  if(new TextDecoder().decode(source.subarray(end,end+6))!=='endobj')continue;
+  return {start,end:end+6};
+ }
+ return null;
+}
+function originalObjectHeaders(source){
+ const headers=new Map(),white=b=>[0,9,10,12,13,32].includes(b),digit=b=>b>=48&&b<=57;
+ for(let i=source.indexOf(111);i>=0;i=source.indexOf(111,i+1)){
+  if(source[i+1]!==98||source[i+2]!==106||!white(source[i-1])||(!white(source[i+3])&&![60,91,47,40].includes(source[i+3])))continue;
+  let at=i-1;while(white(source[at]))at--;const generationEnd=at+1;while(digit(source[at]))at--;const generationStart=at+1;if(generationStart===generationEnd||!white(source[at]))continue;
+  while(white(source[at]))at--;const numberEnd=at+1;while(digit(source[at]))at--;const start=at+1;if(start===numberEnd||(at>=0&&!white(source[at])))continue;
+  const number=Number(new TextDecoder().decode(source.subarray(start,numberEnd))),generation=Number(new TextDecoder().decode(source.subarray(generationStart,generationEnd)));
+  if(number<1||number>200000||generation>65535)continue;const key=number+':'+generation;if(!headers.has(key))headers.set(key,[]);headers.get(key).push({start,content:i+3});
+ }
+ return headers;
+}
+function originalPlainSpan(source,ref,object,headers,PDFLib,context){
+ const expected=object.toString();
+ for(const entry of headers.get(ref.objectNumber+':'+ref.generationNumber)||[]){
+  try{
+   const bytes=source.subarray(entry.content,Math.min(source.length,entry.content+Math.max(65536,object.sizeInBytes()*4))),parser=PDFLib.PDFObjectParser.forBytes(bytes,context);
+   const parsed=parser.parseObject();if(parsed instanceof PDFLib.PDFRawStream||parsed.toString()!==expected)continue;
+   parser.skipWhitespaceAndComments();const end=entry.content+parser.bytes.offset();
+   if(new TextDecoder().decode(source.subarray(end,end+6))==='endobj')return {start:entry.start,end:end+6};
+  }catch{}
+ }
+ return null;
+}
+function canBridgeObjects(source,start,end){
+ if(end<start||end-start>65536)return false;
+ const gap=new TextDecoder('latin1').decode(source.subarray(start,end));
+ // Do not copy a complete original PDF revision or an old xref container.
+ return !/(?:^|[\r\n])\s*(?:xref\b|trailer\b|startxref\b|%%EOF|%PDF-)|\/Type\s*\/(?:XRef|ObjStm)\b/.test(gap);
+}
+
 export async function compileWatermarkedPdf(source,expected,{PDFLib,SparkMD5,onProgress=()=>{}}){
  if(source.length!==expected.size||source.length>MAX_PDF_BYTES)throw Error('PDF 大小不符或超過 256 MiB');
  const md5=SparkMD5.ArrayBuffer.hash(source.buffer.slice(source.byteOffset,source.byteOffset+source.byteLength));
@@ -47,7 +94,7 @@ export async function compileWatermarkedPdf(source,expected,{PDFLib,SparkMD5,onP
  const locate=streamLocator(source,SparkMD5),literal=[],ranged=[],usedOffsets=new Set();
  for(const [ref,object] of doc.context.enumerateIndirectObjects()){
   if(ref.objectNumber>200000)throw Error('PDF 物件編號過大，請重新匯出');
-  const offset=object instanceof PDFRawStream&&object.contents.length>=256?locate(object.contents,usedOffsets):-1;
+  const offset=object instanceof PDFRawStream&&object.contents.length>=32?locate(object.contents,usedOffsets):-1;
   if(offset>=0)usedOffsets.add(offset);
   (offset>=0?ranged:literal).push({ref,object,offset});
  }
@@ -58,16 +105,31 @@ export async function compileWatermarkedPdf(source,expected,{PDFLib,SparkMD5,onP
  const segments=[],metadata=[],offsets=new Map();let outputLength=0,metaLength=0;
  function append(bytes){if(!bytes.length)return;const previous=segments.at(-1);if(previous?.[0]===0)previous[2]+=bytes.length;else segments.push([0,metaLength,bytes.length]);metadata.push(bytes);metaLength+=bytes.length;outputLength+=bytes.length;if(metaLength>MAX_TEMPLATE_BYTES)throw Error('PDF 結構超過合成樣板上限，請重新匯出');}
  append(encoder.encode('%PDF-1.7\n%Bibliotheca personalized PDF\n'));
- for(const {ref,object,offset} of [...literal,...forward]){
-  offsets.set(ref.objectNumber,[outputLength,ref.generationNumber]);append(encoder.encode(`${ref.objectNumber} ${ref.generationNumber} obj\n`));
-  if(offset<0)append(bytesOf(object));
-  else{
-   const dict=object.dict.clone(doc.context);dict.set(name('Length'),PDFNumber.of(object.contents.length));
-   append(bytesOf(dict));append(encoder.encode('\nstream\n'));
-   segments.push([1,offset,object.contents.length]);outputLength+=object.contents.length;
-   append(encoder.encode('\nendstream'));
+ const spans=forward.map(item=>({...item,span:originalStreamSpan(source,item.ref,item.object,item.offset,PDFLib,doc.context)}));
+ const nativeObjects=spans.every(item=>item.span)&&spans.every((item,i)=>!i||item.span.start>=spans[i-1].span.end);
+ if(nativeObjects){
+  const headers=originalObjectHeaders(source),kept=[];
+  for(const item of literal){const span=item.object instanceof PDFRawStream?null:originalPlainSpan(source,item.ref,item.object,headers,PDFLib,doc.context);if(span&&!spans.some(other=>span.start<other.span.end&&span.end>other.span.start))spans.push({...item,span});else kept.push(item);}
+  literal.length=0;literal.push(...kept);spans.sort((a,b)=>a.span.start-b.span.start);
+  const groups=[];
+  for(const item of spans){let group=groups.at(-1);if(!group||!canBridgeObjects(source,group.end,item.span.start)){group={start:item.span.start,end:item.span.end,items:[]};groups.push(group);}group.items.push(item);group.end=item.span.end;}
+  for(const group of groups){
+   for(const {ref,span} of group.items)offsets.set(ref.objectNumber,[outputLength+span.start-group.start,ref.generationNumber]);
+   segments.push([1,group.start,group.end-group.start]);outputLength+=group.end-group.start;append(encoder.encode('\n'));
   }
-  append(encoder.encode('\nendobj\n'));
+  for(const {ref,object} of literal){offsets.set(ref.objectNumber,[outputLength,ref.generationNumber]);append(encoder.encode(`${ref.objectNumber} ${ref.generationNumber} obj\n`));append(bytesOf(object));append(encoder.encode('\nendobj\n'));}
+ }else{
+  for(const {ref,object,offset} of [...literal,...forward]){
+   offsets.set(ref.objectNumber,[outputLength,ref.generationNumber]);append(encoder.encode(`${ref.objectNumber} ${ref.generationNumber} obj\n`));
+   if(offset<0)append(bytesOf(object));
+   else{
+    const dict=object.dict.clone(doc.context);dict.set(name('Length'),PDFNumber.of(object.contents.length));
+    append(bytesOf(dict));append(encoder.encode('\nstream\n'));
+    segments.push([1,offset,object.contents.length]);outputLength+=object.contents.length;
+    append(encoder.encode('\nendstream'));
+   }
+   append(encoder.encode('\nendobj\n'));
+  }
  }
  const xrefOffset=outputLength,size=Math.max(...offsets.keys())+1;
  let xref=`xref\n0 ${size}\n0000000000 65535 f \n`;
@@ -77,5 +139,5 @@ export async function compileWatermarkedPdf(source,expected,{PDFLib,SparkMD5,onP
  const proofs=locations(meta,`/BibliothecaProof (${PROOF_PLACEHOLDER})`).map(i=>i+'/BibliothecaProof ('.length);
  const invisible=locations(meta,`/BibliothecaInvisibleTrace <${hidden}>`).map(i=>i+'/BibliothecaInvisibleTrace <'.length),barcodes=locations(meta,BARCODE_PLACEHOLDER);
  if(codes.length!==pages.length+1||proofs.length!==1||invisible.length!==pages.length||barcodes.length!==1)throw Error('PDF 水印樣板位置不符');
- return {version:WATERMARK_VERSION,compilerRevision:2,sourceSize:source.length,sourceMd5:md5,pages:pages.length,length:outputLength,metadata:base64(meta),segments,slots:{codes,proof:proofs[0],invisible,barcode:barcodes[0]}};
+ return {version:WATERMARK_VERSION,compilerRevision:3,sourceSize:source.length,sourceMd5:md5,pages:pages.length,length:outputLength,metadata:base64(meta),segments,slots:{codes,proof:proofs[0],invisible,barcode:barcodes[0]}};
 }

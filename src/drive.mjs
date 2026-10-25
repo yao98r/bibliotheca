@@ -2,7 +2,7 @@ import {fail,bounded,unb64,replaceTrace} from './core.mjs';
 import {driveToken,one,run,rows} from './auth.mjs';
 import {appendPdfTail} from './pdf-stream.mjs';
 import {restoredCategory} from './catalog.mjs';
-import {loadWatermarkTemplate,watermarkProof,personalizeWatermark,composeWatermarkedPdf} from './backend-watermark.mjs';
+import {loadWatermarkTemplate,watermarkProof,personalizeWatermark,composeWatermarkedPdf,composeNativeWatermarkedPdf} from './backend-watermark.mjs';
 const FOLDER='application/vnd.google-apps.folder';
 const validId=s=>typeof s==='string'&&/^[\w-]{10,200}$/.test(s);
 export async function drive(env,path,token,headers={}){
@@ -111,6 +111,10 @@ export async function watermarkedFullFile(env,asset,row,ticket,token){
  const template=await loadWatermarkTemplate(row,asset),proof=await watermarkProof(env.TOKEN_ENCRYPTION_KEY,ticket,asset);
  if(template.plan.pages!==row.page_count||template.plan.length!==row.output_bytes)fail(409,'PDF 合成索引不符，請管理者重新準備');
  const metadata=personalizeWatermark(template,ticket.trace_code,proof);
+ if(typeof FixedLengthStream!=='undefined'&&template.rangeCount<=32){
+  const stream=await composeNativeWatermarkedPdf((offset,size)=>drive(env,`files/${asset.id}?alt=media`,token,{Range:`bytes=${offset}-${offset+size-1}`}),asset,template,metadata);
+  return {stream,length:template.plan.length};
+ }
  const r=await drive(env,`files/${asset.id}?alt=media`,token),declared=r.headers.get('content-length');
  if(r.status!==200||(declared!==null&&Number(declared)!==asset.size)){await r.body?.cancel();fail(502,'來源 PDF 長度不符');}
  return {stream:composeWatermarkedPdf(r.body,asset,template,metadata),length:template.plan.length};

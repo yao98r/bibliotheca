@@ -5,7 +5,7 @@ const encoder=new TextEncoder();
 const keys=new Map(),templates=new Map();let templateWeight=0;
 const same=(bytes,at,text)=>{const expected=encoder.encode(text);return expected.every((v,i)=>bytes[at+i]===v);};
 export function validateWatermarkTemplate(plan,asset){
- if(!plan||plan.version!==WATERMARK_VERSION||plan.compilerRevision!==2||plan.sourceSize!==asset.size||plan.sourceMd5!==asset.md5||!Number.isInteger(plan.pages)||plan.pages<1||plan.pages>10000||!Number.isSafeInteger(plan.length)||plan.length<1||plan.length>asset.size+MAX_TEMPLATE_BYTES||typeof plan.metadata!=='string'||plan.metadata.length>MAX_TEMPLATE_BYTES*1.4||!Array.isArray(plan.segments)||plan.segments.length>100000)fail(400,'PDF 合成樣板無效');
+ if(!plan||plan.version!==WATERMARK_VERSION||![2,3].includes(plan.compilerRevision)||plan.sourceSize!==asset.size||plan.sourceMd5!==asset.md5||!Number.isInteger(plan.pages)||plan.pages<1||plan.pages>10000||!Number.isSafeInteger(plan.length)||plan.length<1||plan.length>asset.size+MAX_TEMPLATE_BYTES||typeof plan.metadata!=='string'||plan.metadata.length>MAX_TEMPLATE_BYTES*1.4||!Array.isArray(plan.segments)||plan.segments.length>100000)fail(400,'PDF 合成樣板無效');
  const metadata=unb64(plan.metadata),slots=plan.slots;if(metadata.length>MAX_TEMPLATE_BYTES||!slots||!Array.isArray(slots.codes)||slots.codes.length!==plan.pages+1||!Array.isArray(slots.invisible)||slots.invisible.length!==plan.pages)fail(400,'PDF 水印位置無效');
  const reserved=[];
  function slot(at,text){if(!Number.isSafeInteger(at)||at<0||at+text.length>metadata.length||!same(metadata,at,text))fail(400,'PDF 水印預留空間不符');reserved.push([at,at+text.length]);}
@@ -60,8 +60,18 @@ export function personalizeWatermark(template,code,proof){
  const barcode=encoder.encode(barcodeCommands(code,encodeCode39));if(barcode.length!==BARCODE_BYTES)fail(500,'PDF 水印長度不符');metadata.set(barcode,plan.slots.barcode);
  return metadata;
 }
+// Native Drive streams may arrive in very small transport chunks. Ask the
+// Workers runtime to fill bounded buffers before crossing into JavaScript.
+// This keeps large-PDF CPU proportional to MiB, not network packet count.
+function bufferedSourceReader(source){
+ let reader;
+ try{reader=source.getReader({mode:'byob'});}catch{return source.getReader();}
+ if(typeof reader.readAtLeast!=='function'){reader.releaseLock();return source.getReader();}
+ const size=1024*1024;
+ return {read:()=>reader.readAtLeast(size,new Uint8Array(size)),cancel:reason=>reader.cancel(reason),releaseLock:()=>reader.releaseLock()};
+}
 export function composeWatermarkedPdf(source,asset,template,metadata){
- const {plan}=template,reader=source.getReader();let index=0,sourcePosition=0,chunk,at=0,rangeUsed=0,output=0,ended=false;
+ const {plan}=template,reader=bufferedSourceReader(source);let index=0,sourcePosition=0,chunk,at=0,rangeUsed=0,output=0,ended=false;
  async function nextChunk(){const result=await reader.read();if(result.done){ended=true;if(sourcePosition!==asset.size)throw Error('Incomplete Drive source');return false;}chunk=result.value;at=0;if(sourcePosition+chunk.length>asset.size)throw Error('Oversized Drive source');return true;}
  async function finishSource(){if(chunk){sourcePosition+=chunk.length-at;chunk=null;}while(!ended){if(!await nextChunk())break;sourcePosition+=chunk.length;chunk=null;}}
  const assembled=new ReadableStream({
@@ -86,4 +96,36 @@ export function composeWatermarkedPdf(source,asset,template,metadata){
   const fixed=new FixedLengthStream(plan.length);assembled.pipeTo(fixed.writable).catch(()=>{});return fixed.readable;
  }
  return assembled;
+}
+
+
+// Each validated range stays in native streams. JavaScript only handles the
+// small personalized metadata, never every network chunk of a large source.
+export async function composeNativeWatermarkedPdf(fetchRange,asset,template,metadata){
+ const {plan}=template,sourceSegments=plan.segments.filter(s=>s[0]===1);
+ if(typeof FixedLengthStream==='undefined'||sourceSegments.length>32)throw Error('Native PDF composition unavailable');
+ async function responseFor(segment){
+  const [,offset,size]=segment,response=await fetchRange(offset,size);
+  const expected=`bytes ${offset}-${offset+size-1}/${asset.size}`,declared=response.headers.get('content-length');
+  if(response.status!==206||response.headers.get('content-range')!==expected||(declared!==null&&Number(declared)!==size)){
+   await response.body?.cancel();throw Error('Drive PDF range mismatch');
+  }
+  return response;
+ }
+ let first=sourceSegments.length?await responseFor(sourceSegments[0]):null;
+ const output=new FixedLengthStream(plan.length);
+ (async()=>{
+  for(const segment of plan.segments){
+   const [kind,offset,size]=segment;
+   if(kind===0){const writer=output.writable.getWriter();try{await writer.write(metadata.subarray(offset,offset+size));}finally{writer.releaseLock();}}
+   else{
+    const response=first||await responseFor(segment);first=null;
+    // Network framing validates fetched range bodies. The final native
+    // output guard also rejects any incomplete or oversized concatenation.
+    await response.body.pipeTo(output.writable,{preventClose:true});
+   }
+  }
+  const writer=output.writable.getWriter();try{await writer.close();}finally{writer.releaseLock();}
+ })().catch(async error=>{await first?.body?.cancel(error).catch(()=>{});await output.writable.abort(error).catch(()=>{});});
+ return output.readable;
 }

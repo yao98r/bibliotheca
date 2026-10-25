@@ -104,3 +104,46 @@ test('blank pages with no inherited Resources remain valid after backend waterma
  const bytes=new Uint8Array(await new Response(composeWatermarkedPdf(stream(source),asset,template,personalizeWatermark(template,'ABCD-EFGH','1'.repeat(64)))).arrayBuffer());
  const task=getDocument({data:bytes.slice(),isEvalSupported:false});try{const page=await (await task.promise).getPage(1);assert.equal((await page.getTextContent()).items.length,0);assert.ok((await page.getOperatorList()).fnArray.length>10);}finally{await task.destroy();}
 });
+
+
+test('native range composition reproduces exact personalized bytes and rejects full or incomplete Drive ranges',{timeout:15000},async()=>{
+ const doc=await PDFLib.PDFDocument.create({updateMetadata:false});doc.addPage().drawText('NATIVE RANGE CONTENT');
+ doc.context.register(PDFLib.PDFRawStream.of(doc.context.obj({Length:262144}),randomBytes(262144)));
+ const source=await doc.save({useObjectStreams:true}),asset={size:source.length,md5:SparkMD5.ArrayBuffer.hash(source.buffer)};
+ const plan=await compileWatermarkedPdf(source,asset,{PDFLib,SparkMD5}),template=validateWatermarkTemplate(plan,asset);assert.equal(template.rangeCount,1);
+ const expected=await new Response(composeWatermarkedPdf(stream(source),asset,template,personalizeWatermark(template,'ABCD-EFGH','1'.repeat(64)))).arrayBuffer();
+ const mf=new Miniflare({modules:true,modulesRoot:process.cwd(),scriptPath:'test/fixtures/watermark-stream-worker.mjs',compatibilityDate:'2026-07-01'});
+ try{
+  for(const failure of [null,'full','short']){
+   const response=await mf.dispatchFetch('https://watermark.test/',{method:'POST',body:JSON.stringify({native:true,asset,data:gzipSync(JSON.stringify(plan)).toString('base64'),source:Buffer.from(source).toString('base64'),failure})});
+
+   if(failure==='full'){assert.equal(response.status,502);continue;}
+   if(failure==='short'){let bytes;try{bytes=new Uint8Array(await response.arrayBuffer());}catch{continue;}assert.ok(bytes.length<plan.length);continue;}
+   assert.equal(response.status,200);assert.deepEqual(await response.arrayBuffer(),expected);
+  }
+ }finally{await mf.dispose();}
+});
+
+test('native object spans never bridge an original PDF revision trailer',async()=>{
+ const doc=await PDFLib.PDFDocument.create({updateMetadata:false});doc.addPage().drawText('INCREMENTAL SOURCE');
+ doc.context.register(PDFLib.PDFRawStream.of(doc.context.obj({Length:512}),randomBytes(512)));
+ const first=await doc.save({useObjectStreams:false}),number=doc.context.largestObjectNumber+1;
+ const previous=Number(Buffer.from(first).toString('latin1').match(/startxref\s+(\d+)/)[1]);
+ const object=Buffer.concat([Buffer.from(`${number} 0 obj\n<< /Length 512 >>\nstream\n`),randomBytes(512),Buffer.from('\nendstream\nendobj\n')]);
+ const tail=Buffer.from(`xref\n${number} 1\n${String(first.length).padStart(10,'0')} 00000 n \ntrailer\n<< /Size ${number+1} /Root ${doc.context.trailerInfo.Root} /Prev ${previous} >>\nstartxref\n${first.length+object.length}\n%%EOF\n`);
+ const source=new Uint8Array(Buffer.concat([first,object,tail])),asset={size:source.length,md5:SparkMD5.ArrayBuffer.hash(source.buffer)};
+ const plan=await compileWatermarkedPdf(source,asset,{PDFLib,SparkMD5}),template=validateWatermarkTemplate(plan,asset);assert.ok(template.rangeCount>=2);
+ const bytes=new Uint8Array(await new Response(composeWatermarkedPdf(stream(source),asset,template,personalizeWatermark(template,'ABCD-EFGH','1'.repeat(64)))).arrayBuffer());
+ assert.equal((Buffer.from(bytes).toString('latin1').match(/%%EOF/g)||[]).length,1);assert.equal(Buffer.from(bytes).indexOf(Buffer.from(first)),-1);
+ const output=await PDFLib.PDFDocument.load(bytes,{throwOnInvalidObject:true});assert.equal(output.getPage(0).node.get(PDFLib.PDFName.of('BibliothecaTrace')).decodeText(),'ABCD-EFGH');
+});
+
+
+test('unchanged direct PDF objects reuse source spans without inflating metadata',async()=>{
+ const doc=await PDFLib.PDFDocument.create({updateMetadata:false});doc.addPage().drawText('REUSED OBJECTS');
+ const value=randomBytes(250000).toString('hex'),ref=doc.context.register(PDFLib.PDFString.of(value));doc.catalog.set(PDFLib.PDFName.of('FixtureData'),ref);
+ const source=await doc.save({useObjectStreams:false}),asset={size:source.length,md5:SparkMD5.ArrayBuffer.hash(source.buffer)};
+ const plan=await compileWatermarkedPdf(source,asset,{PDFLib,SparkMD5}),template=validateWatermarkTemplate(plan,asset);assert.ok(template.metadata.length<20000);assert.ok(template.rangeCount<=2);
+ const bytes=new Uint8Array(await new Response(composeWatermarkedPdf(stream(source),asset,template,personalizeWatermark(template,'ABCD-EFGH','1'.repeat(64)))).arrayBuffer());
+ const output=await PDFLib.PDFDocument.load(bytes,{throwOnInvalidObject:true});assert.equal(output.catalog.lookup(PDFLib.PDFName.of('FixtureData')).asString(),value);assert.equal(output.getPage(0).node.get(PDFLib.PDFName.of('BibliothecaTrace')).decodeText(),'ABCD-EFGH');
+});
