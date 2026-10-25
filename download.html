@@ -44,9 +44,12 @@ async function savePdf(path){
  const context=await remoteApi('/api/download-context?ticket='+encodeURIComponent(ticket));
  const response=await authorizedFetch(path);if(!response.ok){const data=await response.json().catch(()=>({}));const e=Error(data.error||'下載未完成，請重試');e.status=response.status;throw e;}
  const bytes=new Uint8Array(await response.arrayBuffer()),expected=response.headers.get('X-PDF-Bytes');if(!bytes.length||expected!==null&&bytes.length!==Number(expected))throw Error('PDF 傳輸中斷，請重新下載。');
- const [{stampPdf},PDFLib]=await Promise.all([import('./assets/trace-watermark.mjs'),import('./assets/pdf-lib.esm.min.js')]);
- const marked=await stampPdf(bytes,context.traceCode,{PDFLib,onProgress:(n,total)=>{message.textContent='正在整理檔案：'+n+' / '+total;}});
- const blob=new Blob([marked],{type:'application/pdf'}),header=response.headers.get('Content-Disposition')||'';let name=context.title||'TSEA.pdf';const utf=header.match(/filename\*=UTF-8''([^;]+)/i);if(utf)try{name=decodeURIComponent(utf[1]);}catch{}
+ const watermark=response.headers.get('X-PDF-Watermark');let output=bytes;
+ // Compatibility during deployment: upgraded backends always deliver a
+ // composed document, which is saved byte-for-byte without loading PDF-LIB.
+ if(!watermark||watermark==='legacy'){const {stampPdf}=await import('./assets/trace-watermark.mjs'),PDFLib=await import('./assets/pdf-lib.esm.min.js');output=await stampPdf(bytes,context.traceCode,{PDFLib,onProgress:(n,total)=>{document.getElementById('status').textContent='正在準備 PDF：'+n+'／'+total+' 頁';}});}
+ else if(watermark!=='server-v2')throw Error('PDF 保護版本不符，請重新取得下載入口。');
+ const blob=new Blob([output],{type:'application/pdf'}),header=response.headers.get('Content-Disposition')||'';let name=context.title||'TSEA.pdf';const utf=header.match(/filename\*=UTF-8''([^;]+)/i);if(utf)try{name=decodeURIComponent(utf[1]);}catch{}
  const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(url),60000);
 }
 

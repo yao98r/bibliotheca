@@ -13,7 +13,7 @@ let mf,env,token;
 before(async()=>{
  mf=new Miniflare({modules:true,script:'export default {fetch(){return new Response("ok")}}',compatibilityDate:'2026-07-01',d1Databases:['DB']});
  env={DB:await mf.getD1Database('DB'),OWNER_EMAIL:'owner@example.com',REFERENCE_ROOT_ID:'reference-root-001',MOCK_ROOT_ID:'mock-root-0000001',TOKEN_ENCRYPTION_KEY:random()};
- for(const file of ['0001','0002','0003','0004'])for(const sql of (await readFile('migrations/'+file+'.sql','utf8')).split(';').map(s=>s.trim()).filter(Boolean))await env.DB.prepare(sql).run();
+ for(const file of ['0001','0002','0003','0004','0005'])for(const sql of (await readFile('migrations/'+file+'.sql','utf8')).split(';').map(s=>s.trim()).filter(Boolean))await env.DB.prepare(sql).run();
  token=random();
  await env.DB.prepare('INSERT INTO sessions VALUES (?,?,?,?)').bind(await hash(token),env.OWNER_EMAIL,'csrf',now()+3600).run();
  await env.DB.batch(Array.from({length:51},(_,i)=>env.DB.prepare('INSERT INTO users(email,google_sub,individual,view_enabled) VALUES (?,?,1,1)').bind(i===0?env.OWNER_EMAIL:`reader${i}@example.com`,'private-sub-'+i)));

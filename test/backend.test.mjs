@@ -12,7 +12,7 @@ let mf,env,ownerToken,userToken;
 before(async()=>{
  mf=new Miniflare({modules:true,script:'export default {fetch(){return new Response("ok")}}',compatibilityDate:'2026-07-01',d1Databases:['DB']});
  env={DB:await mf.getD1Database('DB'),OWNER_EMAIL:'owner@example.com',ASSETS:{fetch:()=>new Response('static')}};
- for(const migration of ['0001','0002']){const sql=await readFile('migrations/'+migration+'.sql','utf8');for(const statement of sql.split(';').map(s=>s.trim()).filter(Boolean))await env.DB.prepare(statement).run();}
+ for(const migration of ['0001','0002','0003','0004','0005']){const sql=await readFile('migrations/'+migration+'.sql','utf8');for(const statement of sql.split(';').map(s=>s.trim()).filter(Boolean))await env.DB.prepare(statement).run();}
  ownerToken=random();userToken=random();
  for(const [email,token,individual] of [['owner@example.com',ownerToken,0],['reader@example.com',userToken,1]]){
   await env.DB.prepare('INSERT INTO users(email,google_name,individual,view_enabled) VALUES (?,?,?,1)').bind(email,email,individual).run();

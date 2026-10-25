@@ -1,10 +1,11 @@
 import {fail,now,iso,random,hash,day,isDownload,validAction,scopeAllows,permission,validateProfile,traceCode,unb64,ranks} from './core.mjs';
 import {one,run,rows,setting,setSetting,session,jsonBody,csrf,beginAuth,callback,exchange,driveToken} from './auth.mjs';
-import {syncStep,assetFor,verifyAsset,indexFor,singlePage,fullFile} from './drive.mjs';
+import {syncStep,assetFor,verifyAsset,indexFor,singlePage,fullFile,watermarkedFullFile} from './drive.mjs';
 import {allowedOrigin} from './origins.mjs';
 import {authErrorPage} from './auth-error.mjs';
 import {catalogEntries,categoryRepairs,restoredBooks,restoredSource} from './catalog.mjs';
 import {nextIndex,indexSource,startIndex,storeIndexPage,storeIndexPages,finishIndex,indexError} from './indexing.mjs';
+import {nextWatermark,watermarkSource,storeWatermark,watermarkRow} from './watermark-indexing.mjs';
 const json=Response.json;
 function admin(u){if(!u.admin)fail(403,'僅管理者可操作');}
 async function bookFor(env,u,id,action='open',asset){
@@ -40,7 +41,8 @@ async function prepare(env,u,b,body,origin){
  if(!selected)fail(404,'此書尚未設定答案檔');
  const a=await assetFor(env,b.id,selected);
  if(a.mime==='application/vnd.google-apps.folder')return {url:origin+'/files?'+new URLSearchParams({book:b.id,folder:a.id})};
- const token=await driveToken(env);await verifyAsset(env,a,token);await indexFor(env,a,token);
+ const token=await driveToken(env);await verifyAsset(env,a,token);const index=await indexFor(env,a,token);
+ if(isDownload(body.action)&&env.PDF_WATERMARK_ROLLOUT!=='prepare'&&!await watermarkRow(env,a))fail(409,'這份 PDF 正在準備整本保護，完成後即可下載；目前仍可逐頁閱讀。');
  const raw=random(),code=traceCode(),kind=isDownload(body.action)?'download':'view';
  await env.DB.batch([
   env.DB.prepare('INSERT INTO tickets VALUES (?,?,?,?,?,?,?,?,NULL,?)').bind(await hash(raw),u.email,b.id,a.id,body.action,kind,code,iso(),now()+3600),
@@ -50,7 +52,7 @@ async function prepare(env,u,b,body,origin){
 }
 async function handle(request,env,ctx){
  const url=new URL(request.url),p=url.pathname,method=request.method;
- if(p==='/api/health')return json({ok:true,oauthConfigured:!!(env.GOOGLE_CLIENT_ID&&env.GOOGLE_CLIENT_SECRET)});
+ if(p==='/api/health')return json({ok:true,oauthConfigured:!!(env.GOOGLE_CLIENT_ID&&env.GOOGLE_CLIENT_SECRET),watermarkVersion:2,watermarkMode:env.PDF_WATERMARK_ROLLOUT==='prepare'?'prepare':'required'});
  if(p==='/auth'&&method==='GET')return beginAuth(request,env);
  if(p==='/auth/callback'&&method==='GET')return callback(request,env);
  if(p==='/api/exchange'&&method==='POST')return exchange(request,env);
@@ -63,8 +65,8 @@ async function handle(request,env,ctx){
  }
  if(!['GET','POST'].includes(method))fail(405,'方法不支援');
  const u=await session(request,env);
- if(p.startsWith('/api/index/'))admin(u);
- const body=method==='POST'?await jsonBody(request,p==='/api/index/pages'?6*1024*1024:p==='/api/index/page'?750000:32768):null;
+ if(p.startsWith('/api/index/')||p.startsWith('/api/watermark/'))admin(u);
+ const body=method==='POST'?await jsonBody(request,p==='/api/index/pages'?6*1024*1024:['/api/index/page','/api/watermark/store'].includes(p)?750000:32768):null;
  if(body)csrf(request,body,u,env);
  if(p==='/api/me'&&method==='GET')return json({email:u.email,name:u.display_name||u.google_name,...(u.admin?{level:u.level,ranks}:{}),admin:u.admin,csrf:u.csrf,canView:!!u.view_enabled,canDownload:u.download_mode==='download',readingMode:u.reading_mode,dailyLimit:u.daily_download_limit,downloadsToday:(await one(env,'SELECT COUNT(*) n FROM downloads WHERE email=? AND day=?',u.email,day())).n});
  if(p==='/api/logout'&&body){await run(env,'DELETE FROM sessions WHERE hash=?',u.sessionHash);return json({ok:true});}
@@ -88,11 +90,12 @@ async function handle(request,env,ctx){
      }else if(body.action==='inherit')await run(env,'UPDATE users SET individual=0 WHERE email=?',email);
      else fail(400,'操作無效');
    }
-   const policy=await setting(env,'policy'),users=await rows(env,'SELECT u.*,COALESCE(d.n,0) downloads_today FROM users u LEFT JOIN (SELECT email,COUNT(*) n FROM downloads WHERE day=? GROUP BY email) d ON d.email=u.email ORDER BY u.email',day());
+   const policy=await setting(env,'policy');
+   const users=await rows(env,`SELECT u.*,COALESCE(d.n,0) downloads_today FROM users u LEFT JOIN (SELECT email,COUNT(*) n FROM downloads WHERE day=? GROUP BY email) d ON d.email=u.email ORDER BY u.email`,day());
    for(const person of users){const p=permission(person,policy,person.email===env.OWNER_EMAIL.toLowerCase());Object.assign(person,p);delete person.google_sub;}
    return json({users});
  }
- if(p==='/api/drive/status'&&method==='GET'){admin(u);const d=await setting(env,'drive'),counts=await one(env,"SELECT COUNT(*) pdfs,COALESCE(SUM(EXISTS(SELECT 1 FROM pdf_headers h WHERE h.size=a.size AND h.md5=a.md5)),0) indexed_count FROM assets a WHERE mime='application/pdf'");return json({configured:!!d,email:d?.email||null,books:(await one(env,'SELECT COUNT(*) n FROM books')).n,pdfs:counts.pdfs,indexed:counts.indexed_count});}
+ if(p==='/api/drive/status'&&method==='GET'){admin(u);const d=await setting(env,'drive'),counts=await one(env,"SELECT COUNT(*) pdfs,COALESCE(SUM(EXISTS(SELECT 1 FROM pdf_headers h WHERE h.size=a.size AND h.md5=a.md5)),0) indexed_count,COALESCE(SUM(EXISTS(SELECT 1 FROM pdf_watermarks w WHERE w.size=a.size AND w.md5=a.md5 AND w.version=2)),0) protected_count FROM assets a WHERE mime='application/pdf'");return json({configured:!!d,email:d?.email||null,books:(await one(env,'SELECT COUNT(*) n FROM books')).n,pdfs:counts.pdfs,indexed:counts.indexed_count,watermarked:counts.protected_count});}
  if(p==='/api/drive/connect'&&body){admin(u);const auth=await beginAuth(request,env,u);return json({authorizationUrl:auth.headers.get('Location')},{headers:{'Set-Cookie':auth.headers.get('Set-Cookie')}});}
  if(p==='/api/drive/sync'&&body){admin(u);return json(await syncStep(env));}
  if(p==='/api/catalog/restore'&&body){
@@ -111,6 +114,9 @@ async function handle(request,env,ctx){
  if(p==='/api/index/pages'&&body)return json(await storeIndexPages(env,body));
  if(p==='/api/index/finish'&&body)return json(await finishIndex(env,body));
  if(p==='/api/index/error'&&body)return json(await indexError(env,body));
+ if(p==='/api/watermark/next'&&body)return json(await nextWatermark(env,body.skip));
+ if(p==='/api/watermark/source'&&method==='GET')return watermarkSource(env,url.searchParams.get('asset'));
+ if(p==='/api/watermark/store'&&body)return json(await storeWatermark(env,body));
  if(p==='/api/files'&&method==='GET'){
    const b=await bookFor(env,u,url.searchParams.get('book'));if(!u.view_enabled&&u.download_mode!=='download')fail(403,'只有書目權限');
    const folder=await assetFor(env,b.id,url.searchParams.get('folder')||b.id);if(folder.mime!=='application/vnd.google-apps.folder')fail(400,'不是資料夾');
@@ -149,12 +155,22 @@ async function handle(request,env,ctx){
    if(p==='/api/fast-file'&&(u.reading_mode!=='fast'||u.download_mode!=='download'))fail(403,'沒有快速翻閱權限');
    const token=await driveToken(env);await verifyAsset(env,a,token);const index=await indexFor(env,a,token);
    const pageCount=index.pageCount??index.pages.length;
-   if(p==='/api/viewer')return json({title:a.name.replace(/\.pdf$/i,''),pages:pageCount,traceCode:t.trace_code,canDownload:u.download_mode==='download',readingMode:u.reading_mode});
+   const watermark=p==='/api/page'?null:await watermarkRow(env,a,p!=='/api/viewer'),fullAvailable=!!watermark||env.PDF_WATERMARK_ROLLOUT==='prepare';
+   if(p==='/api/viewer')return json({title:a.name.replace(/\.pdf$/i,''),pages:pageCount,traceCode:t.trace_code,canDownload:u.download_mode==='download'&&fullAvailable,readingMode:fullAvailable?u.reading_mode:'protected',watermark:watermark?'server-v2':'legacy',fullDownloadAvailable:fullAvailable});
    let stream;
-   if(p==='/api/page'){const page=Number(url.searchParams.get('page'));if(!Number.isInteger(page)||page<1||page>pageCount)fail(400,'頁碼無效');stream=await singlePage(env,a,index,page,t.trace_code,token);await run(env,'INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?)','trace:'+t.trace_code+':page:'+page,u.email,t.book_id,a.name,'page_issued',iso());}
-   else {stream=await fullFile(env,a,index,t.trace_code,token);try{await quota(env,u,a.id);}catch(e){await stream.cancel();throw e;}}
+   const page=p==='/api/page'?Number(url.searchParams.get('page')):null;
+   if(p==='/api/page'){if(!Number.isInteger(page)||page<1||page>pageCount)fail(400,'頁碼無效');stream=await singlePage(env,a,index,page,t.trace_code,token);}
+   let length,kind='legacy-page';
+   if(page===null){
+    if(watermark){const result=await watermarkedFullFile(env,a,watermark,t,token);stream=result.stream;length=result.length;kind='server-v2';}
+    else if(env.PDF_WATERMARK_ROLLOUT==='prepare'){stream=await fullFile(env,a,index,t.trace_code,token);length=a.size+(index.tailEncoding==='base64'?unb64(index.tail).length:new TextEncoder().encode(index.tail).length);kind='legacy';}
+    else fail(409,'這份 PDF 的整本保護尚未備妥，請稍後重試或使用逐頁閱讀。');
+   }
+   if(page!==null)await run(env,'INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?)','trace:'+t.trace_code+':page:'+page,u.email,t.book_id,a.name,'page_issued',iso());
+   else try{await quota(env,u,a.id);}catch(e){await stream.cancel();throw e;}
+   // Persist first delivery once, even when several page requests race.
    if(!t.issued_at)await run(env,'UPDATE tickets SET issued_at=? WHERE hash=? AND issued_at IS NULL',iso(),t.hash);
-   return new Response(stream,{headers:{'Content-Type':'application/pdf','Content-Disposition':`${p==='/file'?'attachment':'inline'}; filename*=UTF-8''${encodeURIComponent(a.name)}`,...(p!=='/api/page'?{'X-PDF-Bytes':String(a.size+(index.tailEncoding==='base64'?unb64(index.tail).length:new TextEncoder().encode(index.tail).length))}:{})}});
+   return new Response(stream,{headers:{'Content-Type':'application/pdf','Content-Disposition':`${p==='/file'?'attachment':'inline'}; filename*=UTF-8''${encodeURIComponent(a.name)}`,...(length?{'X-PDF-Bytes':String(length),'Content-Length':String(length)}:{}),'X-PDF-Watermark':kind}});
  }
  if(p==='/api/traces'&&method==='GET'){
    admin(u);const code=url.searchParams.get('code');if(code&&!/^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/.test(code))fail(400,'追蹤碼格式無效');
@@ -183,7 +199,7 @@ export default {async fetch(request,env,ctx){
  }else response=json({error:message},{status,headers});
  }
  const h=new Headers(response.headers);h.set('X-Content-Type-Options','nosniff');h.set('Referrer-Policy','no-referrer');h.set('X-Frame-Options','DENY');
- if(allowedOrigin(request,env)){h.set('Access-Control-Allow-Origin',request.headers.get('Origin'));h.set('Access-Control-Expose-Headers','Content-Disposition, X-PDF-Bytes');}
+ if(allowedOrigin(request,env)){h.set('Access-Control-Allow-Origin',request.headers.get('Origin'));h.set('Access-Control-Expose-Headers','Content-Disposition, X-PDF-Bytes, X-PDF-Watermark');}
  h.append('Vary','Origin');
  if(!new URL(request.url).pathname.startsWith('/assets/'))h.set('Cache-Control','no-store');
  h.set('Content-Security-Policy',"default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");

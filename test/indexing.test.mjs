@@ -10,6 +10,8 @@ import {preparePdf,base64} from '../public/pdf-index-builder.mjs';
 import {hash,random,now,seal} from '../src/core.mjs';
 import worker from '../src/worker.mjs';
 import {indexFor} from '../src/drive.mjs';
+import {compileWatermarkedPdf} from '../public/pdf-watermark-builder.mjs';
+import {storeWatermark} from '../src/watermark-indexing.mjs';
 let mf,env,source,checksum,builder,owner,reader,job,originalFetch;
 const asset='new-pdf-asset-0001';
 const request=(path,token,body)=>new Request('https://books.test'+path,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+token,...(body?{Origin:'https://books.test','Content-Type':'application/json'}:{})},body:body?JSON.stringify({csrf:'test-csrf',...body}):undefined});
@@ -23,7 +25,7 @@ before(async()=>{
  builder=await preparePdf(source,{size:source.length,md5:checksum},{PDFLib,SparkMD5});
  mf=new Miniflare({modules:true,script:'export default {fetch(){return new Response("ok")}}',compatibilityDate:'2026-07-01',d1Databases:['DB']});
  env={DB:await mf.getD1Database('DB'),OWNER_EMAIL:'owner@example.com',REFERENCE_ROOT_ID:'root-reference-0001',MOCK_ROOT_ID:'root-mock-0001',TOKEN_ENCRYPTION_KEY:random(),GOOGLE_CLIENT_ID:'test',GOOGLE_CLIENT_SECRET:'test'};
- for(const file of ['0001','0002','0003'])for(const sql of (await readFile('migrations/'+file+'.sql','utf8')).split(';').map(s=>s.trim()).filter(Boolean))await env.DB.prepare(sql).run();
+ for(const file of ['0001','0002','0003','0004','0005'])for(const sql of (await readFile('migrations/'+file+'.sql','utf8')).split(';').map(s=>s.trim()).filter(Boolean))await env.DB.prepare(sql).run();
  owner=random();reader=random();
  for(const [email,token] of [['owner@example.com',owner],['reader@example.com',reader]]){
   await env.DB.prepare('INSERT INTO users(email,individual,view_enabled) VALUES (?,1,1)').bind(email).run();
@@ -64,8 +66,8 @@ test('browser builder reconstructs individual pages and a valid traced full PDF'
  await assert.rejects(preparePdf(source,{size:source.length,md5:'wrong'},{PDFLib,SparkMD5}),/校驗/);
 });
 test('readers cannot obtain raw indexing sources or upload indexes',async()=>{
- for(const path of ['/api/index/next','/api/index/start','/api/index/page','/api/index/pages','/api/index/finish'])assert.equal((await call(path,{},reader)).status,403);
- assert.equal((await call('/api/index/source?job=anything',undefined,reader)).status,403);
+ for(const path of ['/api/watermark/next','/api/watermark/store','/api/index/next','/api/index/start','/api/index/page','/api/index/pages','/api/index/finish'])assert.equal((await call(path,{},reader)).status,403);
+ assert.equal((await call('/api/index/source?job=anything',undefined,reader)).status,403);assert.equal((await call('/api/watermark/source?asset='+asset,undefined,reader)).status,403);
  assert.equal((await worker.fetch(new Request('https://books.test/api/index/next',{method:'POST',headers:{Authorization:'Bearer '+owner,Origin:'https://evil.test','Content-Type':'application/json'},body:JSON.stringify({csrf:'test-csrf'})}),env,{})).status,403);
 });
 test('new PDF is queued, indexes resume safely, and incomplete drafts cannot be read',async()=>{
@@ -83,12 +85,30 @@ test('new PDF is queued, indexes resume safely, and incomplete drafts cannot be 
  assert.equal((await call('/api/index/finish',{job:job.id})).status,200);
  assert.equal((await (await call('/api/index/next',{})).json()).job,null);
 });
-test('published automatic index supports real page and traced full download endpoints',async()=>{
+test('owner prepares full backend composition once without rewriting page indexes; readers receive only composed downloads',async()=>{
+ assert.equal((await call('/api/prepare',{bookId:asset,action:'download_request'})).status,409);
+ const next=await (await call('/api/watermark/next',{})).json();assert.equal(next.job.asset,asset);
+ assert.deepEqual(new Uint8Array(await (await call('/api/watermark/source?asset='+asset)).arrayBuffer()),source);
+ const before=(await env.DB.prepare('SELECT COUNT(*) n FROM pdf_pages').first()).n;
+ const plan=await compileWatermarkedPdf(source,{size:source.length,md5:checksum},{PDFLib,SparkMD5}),body={asset,data:pack(plan)};
+ const saved=await call('/api/watermark/store',body);assert.equal(saved.status,200);assert.equal((await saved.json()).changed,true);
+ assert.equal((await (await call('/api/watermark/store',body)).json()).changed,false);
+ const previous=await env.DB.prepare('SELECT etag FROM pdf_watermarks WHERE size=? AND md5=?').bind(source.length,checksum).first();
+ await assert.rejects(storeWatermark(env,{asset,data:pack({...plan,extra:'budget-check'})},1),e=>e.status===507);
+ assert.deepEqual(await env.DB.prepare('SELECT etag FROM pdf_watermarks WHERE size=? AND md5=?').bind(source.length,checksum).first(),previous);
+ assert.equal((await env.DB.prepare('SELECT COUNT(*) n FROM pdf_pages').first()).n,before);
+ assert.equal((await (await call('/api/watermark/next',{})).json()).job,null);
  const r=await call('/api/prepare',{bookId:asset,action:'open'});assert.equal(r.status,200);const ticket=new URL((await r.json()).url).searchParams.get('ticket');
- const page=await call('/api/page?'+new URLSearchParams({ticket,page:2}));assert.equal(page.status,200);const doc=await PDFLib.PDFDocument.load(await page.arrayBuffer());assert.equal(doc.getPageCount(),1);
+ const metadata=await (await call('/api/viewer?ticket='+ticket)).json();assert.equal(metadata.watermark,'server-v2');assert.equal(metadata.canDownload,true);
+ const page=await call('/api/page?'+new URLSearchParams({ticket,page:2}));assert.equal(page.status,200);assert.equal(page.headers.get('X-PDF-Watermark'),'legacy-page');const doc=await PDFLib.PDFDocument.load(await page.arrayBuffer());assert.equal(doc.getPageCount(),1);
  const download=await call('/api/viewer/download',{ticket});assert.equal(download.status,200);const url=new URL((await download.json()).url),file=await call(url.pathname+url.search);
- assert.equal(file.status,200);const bytes=await file.arrayBuffer();assert.equal(bytes.byteLength,Number(file.headers.get('X-PDF-Bytes')));assert.equal((await PDFLib.PDFDocument.load(bytes)).getPageCount(),2);
+ assert.equal(file.status,200);const bytes=await file.arrayBuffer();assert.equal(bytes.byteLength,Number(file.headers.get('X-PDF-Bytes')));const full=await PDFLib.PDFDocument.load(bytes);assert.equal(full.getPageCount(),2);
+ assert.equal(file.headers.get('X-PDF-Watermark'),'server-v2');assert.notDeepEqual(new Uint8Array(bytes),source);
+ const info=full.context.lookup(full.context.trailerInfo.Info);assert.equal(info.get(PDFLib.PDFName.of('BibliothecaProof')).decodeText().length,64);
+ assert.equal(full.getPage(0).node.get(PDFLib.PDFName.of('BibliothecaInvisibleTrace')).decodeText().length,74);
+ const direct=await call('/api/fast-file?ticket='+ticket);assert.equal(direct.status,200);assert.equal(direct.headers.get('X-PDF-Watermark'),'server-v2');await direct.arrayBuffer();
 });
+
 test('updated same-ID PDF uses matching checksum index instead of a stale original header',async()=>{
  await env.DB.prepare('INSERT INTO pdf_headers VALUES (?,?,?,?,?)').bind(asset,source.length-1,'old','invalid',1).run();
  const result=await indexFor(env,{id:asset,size:source.length,md5:checksum},'unused');assert.equal(result.indexAsset,job.id);
@@ -107,4 +127,41 @@ test('batched indexes validate atomically, reject gaps, and support safe retries
  assert.equal((await env.DB.prepare('SELECT COUNT(*) n FROM pdf_pages WHERE asset=?').bind(id).first()).n,0);
  for(let n=0;n<2;n++){const r=await call('/api/index/pages',{job:id,pages});assert.equal(r.status,200);assert.equal((await r.json()).nextPage,3);}
  assert.equal((await call('/api/index/finish',{job:id})).status,200);
+});
+
+test('reading still uses D1, but repeat delivery never rewrites first-issued time',async t=>{
+ const prepared=await call('/api/prepare',{bookId:asset,action:'open'});
+ assert.equal(prepared.status,200);const ticket=new URL((await prepared.json()).url).searchParams.get('ticket');
+ async function profile(path,body){
+  const log=[];
+  function statement(raw,sql){return {
+   bind(...values){return statement(raw.bind(...values),sql);},
+   async first(column){const r=await raw.all();log.push({sql,meta:r.meta});const row=r.results[0];return column?(row?.[column]??null):(row??null);},
+   async all(){const r=await raw.all();log.push({sql,meta:r.meta});return r;},
+   async run(){const r=await raw.run();log.push({sql,meta:r.meta});return r;}
+  };}
+  const DB={prepare:sql=>statement(env.DB.prepare(sql),sql)};
+  const response=await worker.fetch(request(path,owner,body),{...env,DB},{});
+  assert.equal(response.status,200);await response.arrayBuffer();
+  return {log,calls:log.length,rowsRead:log.reduce((n,r)=>n+(r.meta.rows_read||0),0),rowsWritten:log.reduce((n,r)=>n+(r.meta.rows_written||0),0)};
+ }
+ const path='/api/page?'+new URLSearchParams({ticket,page:1});
+ const first=await profile(path),repeat=await profile(path),display=await profile('/api/trace/page',{ticket,page:1}),repeatDisplay=await profile('/api/trace/page',{ticket,page:1});
+ assert.equal(first.log.filter(r=>r.sql.startsWith('UPDATE tickets')).length,1);
+ assert.equal(repeat.log.filter(r=>r.sql.startsWith('UPDATE tickets')).length,0);
+ assert.ok(first.rowsWritten>repeat.rowsWritten);assert.equal(repeat.rowsWritten,0);
+ assert.ok(display.rowsWritten>0);assert.equal(repeatDisplay.rowsWritten,0);
+ assert.ok(first.rowsRead>0&&repeat.rowsRead>0);
+ const summary=Object.fromEntries(Object.entries({first,repeat,display,repeatDisplay}).map(([key,{calls,rowsRead,rowsWritten}])=>[key,{calls,rowsRead,rowsWritten}]));
+ t.diagnostic(JSON.stringify({localD1ReadingProfile:summary}));
+});
+
+test('missing or stale composition templates keep page reading available and reject raw full-file shortcuts',async()=>{
+ await env.DB.prepare('DELETE FROM pdf_watermarks').run();
+ assert.equal((await call('/api/prepare',{bookId:asset,action:'download_request'})).status,409);
+ const prepared=await call('/api/prepare',{bookId:asset,action:'open'});assert.equal(prepared.status,200);
+ const ticket=new URL((await prepared.json()).url).searchParams.get('ticket');
+ const metadata=await (await call('/api/viewer?ticket='+ticket)).json();assert.equal(metadata.readingMode,'protected');assert.equal(metadata.canDownload,false);
+ const direct=await call('/api/fast-file?ticket='+ticket);assert.equal(direct.status,409);assert.match(direct.headers.get('Content-Type'),/json/);assert.equal(direct.headers.get('X-PDF-Watermark'),null);
+ const page=await call('/api/page?'+new URLSearchParams({ticket,page:1}));assert.equal(page.status,200);await page.arrayBuffer();
 });

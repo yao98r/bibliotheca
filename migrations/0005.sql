@@ -1,0 +1,12 @@
+CREATE TABLE IF NOT EXISTS pdf_watermarks (
+ size INTEGER NOT NULL,
+ md5 TEXT NOT NULL,
+ asset TEXT NOT NULL,
+ data TEXT NOT NULL,
+ etag TEXT NOT NULL,
+ page_count INTEGER NOT NULL,
+ output_bytes INTEGER NOT NULL,
+ version INTEGER NOT NULL DEFAULT 2,
+ created_at TEXT NOT NULL,
+ PRIMARY KEY(size,md5)
+);

@@ -49,3 +49,11 @@ test('download page refuses incomplete files and uses the same ticket for metada
  const vm=await import('node:vm'),calls=[],sandbox={URLSearchParams,location:{search:'?ticket=opaque'},remoteApi:async path=>{calls.push(path);return {traceCode:'ABCD-EFGH'};},authorizedFetch:async path=>{calls.push(path);return new Response('PDF',{headers:{'X-PDF-Bytes':'9'}});},Uint8Array};
  vm.createContext(sandbox);vm.runInContext(code,sandbox);await assert.rejects(sandbox.savePdf('/file?ticket=opaque'),/傳輸中斷/);assert.deepEqual(calls,['/api/download-context?ticket=opaque','/file?ticket=opaque']);
 });
+
+test('server-composed downloads save exact backend bytes without invoking any client PDF library',async()=>{
+ const html=await readFile('dist/download.html','utf8'),code=html.slice(html.indexOf('async function savePdf('),html.indexOf('const message=',html.indexOf('async function savePdf(')));
+ const vm=await import('node:vm'),bytes=new TextEncoder().encode('SERVER-PERSONALIZED-PDF');let saved;
+ const link={click(){},set href(value){},set download(value){assert.equal(value,'Prepared.pdf');}};
+ const sandbox={URLSearchParams,location:{search:'?ticket=opaque'},remoteApi:async()=>({traceCode:'ABCD-EFGH',title:'Prepared.pdf'}),authorizedFetch:async()=>new Response(bytes,{headers:{'X-PDF-Bytes':String(bytes.length),'X-PDF-Watermark':'server-v2'}}),Uint8Array,Blob,URL:{createObjectURL(blob){saved=blob;return 'blob:prepared';},revokeObjectURL(){}},document:{createElement(){return link;}},setTimeout(){}};
+ vm.createContext(sandbox);vm.runInContext(code,sandbox);await sandbox.savePdf('/file?ticket=opaque');assert.deepEqual(new Uint8Array(await saved.arrayBuffer()),bytes);
+});

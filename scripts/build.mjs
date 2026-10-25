@@ -41,6 +41,7 @@ if(!github){
  await cp('public/manage.html',output+'/manage.html');
  await cp('public/pdf-index-worker.js',output+'/assets/pdf-index-worker.js');
  await cp('public/pdf-index-builder.mjs',output+'/assets/pdf-index-builder.mjs');
+ for(const file of ['pdf-watermark-worker.js','pdf-watermark-builder.mjs','pdf-watermark-format.mjs'])await cp('public/'+file,output+'/assets/'+file);
  await cp('node_modules/pdf-lib/dist/pdf-lib.min.js',output+'/assets/pdf-lib.min.js');
  await cp('node_modules/spark-md5/spark-md5.min.js',output+'/assets/spark-md5.min.js');
  await cp('node_modules/pdf-lib/LICENSE.md',output+'/assets/PDF-LIB-LICENSE');

@@ -14,6 +14,14 @@ function streamOffsets(bytes){
  return map;
 }
 function sameBytes(source,offset,bytes){if(offset+bytes.length>source.length)return false;for(let i=0;i<bytes.length;i++)if(source[offset+i]!==bytes[i])return false;return true;}
+export function streamLocator(source,SparkMD5){
+ const offsets=streamOffsets(source),cache=new Map();
+ return data=>{
+  const signature=SparkMD5.ArrayBuffer.hash(data.buffer.slice(data.byteOffset,data.byteOffset+data.byteLength));
+  if(cache.has(signature)){const offset=cache.get(signature);if(offset<0||sameBytes(source,offset,data))return offset;}
+  const offset=(offsets.get(key(data))||[]).find(p=>sameBytes(source,p,data))??-1;cache.set(signature,offset);return offset;
+ };
+}
 export async function preparePdf(source,expected,{PDFLib,SparkMD5}){
  if(source.length!==expected.size)throw Error('PDF 傳輸不完整，請重新同步。');
  if(source.length>MAX_PDF_BYTES)throw Error('PDF 超過 256 MB，請先分冊再同步。');
@@ -37,12 +45,7 @@ export async function preparePdf(source,expected,{PDFLib,SparkMD5}){
  const number=Math.max(doc.context.largestObjectNumber+1,trailerSize),root=doc.context.trailerInfo.Root;
  const object=`\n${number} 0 obj\n<< /BibliothecaTrace (ZZZZ-ZZZZ) >>\nendobj\n`;
  const tail=encoder.encode(object+`xref\n${number} 1\n${String(source.length+1).padStart(10,'0')} 00000 n \ntrailer\n<< /Size ${number+1} /Root ${root} /Info ${number} 0 R /Prev ${previous} >>\nstartxref\n${source.length+encoder.encode(object).length}\n%%EOF\n`);
- const offsets=streamOffsets(source),cache=new Map();
- function locate(data){
-  const signature=SparkMD5.ArrayBuffer.hash(data.buffer.slice(data.byteOffset,data.byteOffset+data.byteLength));
-  if(cache.has(signature)){const offset=cache.get(signature);if(offset<0||sameBytes(source,offset,data))return offset;}
-  const offset=(offsets.get(key(data))||[]).find(p=>sameBytes(source,p,data))??-1;cache.set(signature,offset);return offset;
- }
+ const locate=streamLocator(source,SparkMD5);
  return {header:{size:source.length,md5,tail:base64(tail),pageCount:pages},async page(n){
   if(!Number.isInteger(n)||n<1||n>pages)throw Error('頁碼無效');
   const single=await PDFDocument.create({updateMetadata:false});
