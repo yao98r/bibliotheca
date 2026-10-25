@@ -2,6 +2,9 @@ import {fail,hash,iso,bounded,unb64} from './core.mjs';
 import {one,rows,run,driveToken} from './auth.mjs';
 import {drive,verifyAsset} from './drive.mjs';
 const MAX_SOURCE=256*1024*1024;
+// Bound values can exceed the 100 KB SQL-text limit. Each row remains well
+// below D1's 2 MB row limit; readers already join variable-sized parts.
+const PAGE_PART_CHARS=256000;
 const validBase64=s=>typeof s==='string'&&s.length%4===0&&/^[A-Za-z0-9+/]*={0,2}$/.test(s);
 export async function nextIndex(env,skip=[]){
  if(!Array.isArray(skip)||skip.length>1000||skip.some(s=>typeof s!=='string'||s.length>200))fail(400,'略過清單無效');
@@ -60,8 +63,8 @@ export async function storeIndexPage(env,body){
  if(job.status!=='building'||body.page!==job.next_page)fail(409,'請依序建立頁面索引');
  await validatePage(body.data,job.size);
  const statements=[];
- for(let offset=0,part=0;offset<body.data.length;offset+=32000,part++){
-  statements.push(env.DB.prepare('INSERT OR IGNORE INTO pdf_pages(asset,page,part,data) SELECT id,?,?,? FROM index_jobs WHERE id=? AND next_page=? AND status=\'building\'').bind(body.page,part,body.data.slice(offset,offset+32000),job.id,body.page));
+ for(let offset=0,part=0;offset<body.data.length;offset+=PAGE_PART_CHARS,part++){
+  statements.push(env.DB.prepare('INSERT OR IGNORE INTO pdf_pages(asset,page,part,data) SELECT id,?,?,? FROM index_jobs WHERE id=? AND next_page=? AND status=\'building\'').bind(body.page,part,body.data.slice(offset,offset+PAGE_PART_CHARS),job.id,body.page));
  }
  statements.push(env.DB.prepare("UPDATE index_jobs SET next_page=next_page+1,error=NULL,updated_at=? WHERE id=? AND next_page=? AND status='building'").bind(iso(),job.id,body.page));
  await env.DB.batch(statements);
@@ -89,7 +92,7 @@ export async function storeIndexPages(env,body){
  if(job.status!=='building'||pending[0].page!==job.next_page)fail(409,'請依序建立頁面索引');
  for(const p of pending)await validatePage(p.data,job.size);
  const statements=[];
- for(const p of pending)for(let offset=0,part=0;offset<p.data.length;offset+=32000,part++)statements.push(env.DB.prepare("INSERT OR IGNORE INTO pdf_pages(asset,page,part,data) SELECT id,?,?,? FROM index_jobs WHERE id=? AND next_page=? AND status='building'").bind(p.page,part,p.data.slice(offset,offset+32000),job.id,job.next_page));
+ for(const p of pending)for(let offset=0,part=0;offset<p.data.length;offset+=PAGE_PART_CHARS,part++)statements.push(env.DB.prepare("INSERT OR IGNORE INTO pdf_pages(asset,page,part,data) SELECT id,?,?,? FROM index_jobs WHERE id=? AND next_page=? AND status='building'").bind(p.page,part,p.data.slice(offset,offset+PAGE_PART_CHARS),job.id,job.next_page));
  statements.push(env.DB.prepare("UPDATE index_jobs SET next_page=next_page+?,error=NULL,updated_at=? WHERE id=? AND next_page=? AND status='building'").bind(pending.length,iso(),job.id,job.next_page));
  await env.DB.batch(statements);
  return {nextPage:(await one(env,'SELECT next_page FROM index_jobs WHERE id=?',job.id)).next_page};

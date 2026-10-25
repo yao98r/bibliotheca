@@ -16,8 +16,7 @@ export async function syncStep(env){
    task=await one(env,'SELECT * FROM scan ORDER BY id LIMIT 1');
  }
  if(!validId(task.id))fail(400,'資料夾設定無效');
- // A batch of 10 stays below the free Workers plan's 50 D1 queries per request,
- // including folders, authentication, queue state and counts.
+ // Bound each scan step; persist changed metadata and queue progress atomically.
  const q=new URLSearchParams({q:`'${task.id}' in parents and trashed = false`,pageSize:'10',fields:'nextPageToken,files(id,name,mimeType,size,md5Checksum)',...(task.page_token?{pageToken:task.page_token}:{})});
  const data=await (await drive(env,'files?'+q,token)).json(),statements=[];
  for(const f of data.files||[]){
@@ -25,9 +24,9 @@ export async function syncStep(env){
    const bookId=task.book_id||f.id;
    if(!task.book_id){
      const title=f.name.replace(/\.pdf$/i,''),book={id:bookId,title,category:restoredCategory(f.id,task.category),subject:title.match(/數學[AB甲乙]?|國文|英文|物理|化學|生物|地理|歷史|公民|自然|社會/)?.[0]||'',publisher:title.match(/[\[［【]([^\]］】]+)[\]］】]/)?.[1]||'',year:title.match(/\d{3}(?=年)/)?.[0]||'',series:'',referenceKind:task.category==='參考書'?(title.includes('歷屆')?'歷屆學測彙編':title.includes('模擬')?'成冊模擬題本':'學習講義'):'',folder:f.mimeType===FOLDER,hasAnswer:false};
-     statements.push(env.DB.prepare('INSERT INTO books VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,category=excluded.category,data=excluded.data').bind(bookId,title,book.category,JSON.stringify(book)));
+     statements.push(env.DB.prepare('INSERT INTO books VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,category=excluded.category,data=excluded.data WHERE books.title IS NOT excluded.title OR books.category IS NOT excluded.category OR books.data IS NOT excluded.data').bind(bookId,title,book.category,JSON.stringify(book)));
    }
-   statements.push(env.DB.prepare('INSERT INTO assets(id,parent,book_id,name,mime,size,md5) VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET parent=excluded.parent,book_id=excluded.book_id,name=excluded.name,mime=excluded.mime,size=excluded.size,md5=excluded.md5').bind(f.id,task.id,bookId,f.name,f.mimeType,Number(f.size)||0,f.md5Checksum||null));
+   statements.push(env.DB.prepare('INSERT INTO assets(id,parent,book_id,name,mime,size,md5) VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET parent=excluded.parent,book_id=excluded.book_id,name=excluded.name,mime=excluded.mime,size=excluded.size,md5=excluded.md5 WHERE assets.parent IS NOT excluded.parent OR assets.book_id IS NOT excluded.book_id OR assets.name IS NOT excluded.name OR assets.mime IS NOT excluded.mime OR assets.size IS NOT excluded.size OR assets.md5 IS NOT excluded.md5').bind(f.id,task.id,bookId,f.name,f.mimeType,Number(f.size)||0,f.md5Checksum||null));
    if(f.mimeType===FOLDER)statements.push(env.DB.prepare('INSERT OR IGNORE INTO scan VALUES (?,?,?,NULL)').bind(f.id,task.category,bookId));
  }
  // D1 batch executes atomically, so a failed page never advances the cursor.

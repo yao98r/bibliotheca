@@ -88,8 +88,8 @@ async function handle(request,env,ctx){
      }else if(body.action==='inherit')await run(env,'UPDATE users SET individual=0 WHERE email=?',email);
      else fail(400,'操作無效');
    }
-   const policy=await setting(env,'policy'),users=await rows(env,'SELECT * FROM users ORDER BY email');
-   for(const person of users){const p=permission(person,policy,person.email===env.OWNER_EMAIL.toLowerCase());Object.assign(person,p);person.downloads_today=(await one(env,'SELECT COUNT(*) n FROM downloads WHERE email=? AND day=?',person.email,day())).n;delete person.google_sub;}
+   const policy=await setting(env,'policy'),users=await rows(env,'SELECT u.*,COALESCE(d.n,0) downloads_today FROM users u LEFT JOIN (SELECT email,COUNT(*) n FROM downloads WHERE day=? GROUP BY email) d ON d.email=u.email ORDER BY u.email',day());
+   for(const person of users){const p=permission(person,policy,person.email===env.OWNER_EMAIL.toLowerCase());Object.assign(person,p);delete person.google_sub;}
    return json({users});
  }
  if(p==='/api/drive/status'&&method==='GET'){admin(u);const d=await setting(env,'drive'),counts=await one(env,"SELECT COUNT(*) pdfs,COALESCE(SUM(EXISTS(SELECT 1 FROM pdf_headers h WHERE h.size=a.size AND h.md5=a.md5)),0) indexed_count FROM assets a WHERE mime='application/pdf'");return json({configured:!!d,email:d?.email||null,books:(await one(env,'SELECT COUNT(*) n FROM books')).n,pdfs:counts.pdfs,indexed:counts.indexed_count});}
@@ -153,7 +153,7 @@ async function handle(request,env,ctx){
    let stream;
    if(p==='/api/page'){const page=Number(url.searchParams.get('page'));if(!Number.isInteger(page)||page<1||page>pageCount)fail(400,'頁碼無效');stream=await singlePage(env,a,index,page,t.trace_code,token);await run(env,'INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?)','trace:'+t.trace_code+':page:'+page,u.email,t.book_id,a.name,'page_issued',iso());}
    else {stream=await fullFile(env,a,index,t.trace_code,token);try{await quota(env,u,a.id);}catch(e){await stream.cancel();throw e;}}
-   await run(env,'UPDATE tickets SET issued_at=COALESCE(issued_at,?) WHERE hash=?',iso(),t.hash);
+   if(!t.issued_at)await run(env,'UPDATE tickets SET issued_at=? WHERE hash=? AND issued_at IS NULL',iso(),t.hash);
    return new Response(stream,{headers:{'Content-Type':'application/pdf','Content-Disposition':`${p==='/file'?'attachment':'inline'}; filename*=UTF-8''${encodeURIComponent(a.name)}`,...(p!=='/api/page'?{'X-PDF-Bytes':String(a.size+(index.tailEncoding==='base64'?unb64(index.tail).length:new TextEncoder().encode(index.tail).length))}:{})}});
  }
  if(p==='/api/traces'&&method==='GET'){
