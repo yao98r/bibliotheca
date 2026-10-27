@@ -1,4 +1,9 @@
-import restored from './restored-catalog.mjs';
+import original from './restored-catalog.mjs';
+import {updates,additions} from './catalog-recovery.mjs';
+const recovered=new Map(original.map(b=>[b.id,b]));
+for(const patch of updates){if(!recovered.has(patch.id))throw Error('Unknown recovered catalog identity: '+patch.id);recovered.set(patch.id,{...recovered.get(patch.id),...patch});}
+for(const book of additions){if(recovered.has(book.id))throw Error('Duplicate recovered catalog identity: '+book.id);recovered.set(book.id,book);}
+const restored=[...recovered.values()];
 export const restoredBooks=new Map(restored.map(b=>[b.id,b]));
 export function restoredCategory(asset,fallback){
  const categories=new Set(restored.filter(b=>[b.asset,b.answerAsset,b.answerSourceAsset].includes(asset)).map(b=>b.category));
