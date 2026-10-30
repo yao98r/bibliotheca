@@ -35,6 +35,8 @@ for(const name of ['index','files','go','viewer','access','download']) {
  html=html.replace(/\$\('download'\)\.onclick=async\(\)=>\{const popup=window\.open[\s\S]*?finally\{\$\('download'\)\.disabled=false;\}\};/,`$('download').onclick=async()=>{$('download').disabled=true;try{const result=await api('/api/viewer/download',{csrf:me.csrf,ticket:params.get('ticket')});location.href=result.url;}catch(e){$('status').textContent=e.message;}finally{$('download').disabled=false;}};`);
  if(['index','files','go'].includes(name)) html=html.replace('<footer>',`<p><a href="${backend}/manage.html">管理者：Drive 連線與書目同步</a></p><footer>`);
  html=html.replace('</head>',pwaHead+'</head>');
+ if(!github&&name==='index')html=html.replace('</head>','<meta name="google-site-verification" content="OFl8sLV8Tx39RHaVqWPpQTn53hkVUI8BjBYr7HrxSfI"></head>');
+ html=html.replace(/<footer\b[^>]*>/,'$&<p><a href="./privacy.html">隱私權政策</a> · <a href="./terms.html">服務條款與使用說明</a></p>');
  for(const match of html.matchAll(/<script(\s[^>]*)?>([\s\S]*?)<\/script>/g))new vm.Script(match[1]?.includes('module')?'(async()=>{'+match[2]+'})':match[2],{filename:name+'.html'});
  await writeFile(`${output}/${name}.html`,html);
 }
@@ -60,7 +62,7 @@ for(const dir of ['cmaps','standard_fonts','wasm']) await cp(`node_modules/pdfjs
 await cp('PDFJS-LICENSE',output+'/PDFJS-LICENSE');
 const manifest=JSON.parse(await readFile('public/manifest.webmanifest','utf8'));manifest.id=github?'/bibliotheca/':'/';
 await writeFile(output+'/manifest.webmanifest',JSON.stringify(manifest,null,2)+'\n');
-for(const file of ['sw.js','pwa.js','offline.html'])await cp('public/'+file,output+'/'+file);
+for(const file of ['sw.js','pwa.js','offline.html','privacy.html','terms.html'])await cp('public/'+file,output+'/'+file);
 await cp('public/icons',output+'/icons',{recursive:true});
 await writeFile(output+'/.nojekyll','');
 console.log('Built '+output+' with local PDF.js assets; inline scripts parsed successfully.');
