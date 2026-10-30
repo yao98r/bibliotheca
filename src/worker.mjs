@@ -141,7 +141,9 @@ async function handle(request,env,ctx){
  }
  if((p==='/api/event'||p==='/api/prepare')&&body){
    const id=body.id||random();if(typeof id!=='string'||id.length>100)fail(400,'事件代碼無效');
-   if(body.action==='portal_view'){await run(env,'INSERT OR IGNORE INTO events VALUES (?,?,NULL,NULL,?,?)',id,u.email,body.action,iso());return json({ok:true});}
+   // Count one portal visit per account per Taiwan calendar day; callers cannot
+   // force unlimited database writes merely by supplying fresh event IDs.
+   if(body.action==='portal_view'){await run(env,'INSERT OR IGNORE INTO events VALUES (?,?,NULL,NULL,?,?)','visit:'+day(),u.email,body.action,iso());return json({ok:true});}
    const b=await bookFor(env,u,body.bookId,body.action,body.asset);const result=await prepare(env,u,b,body,url.origin);
    await run(env,'INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?)',id,u.email,b.id,result.title||b.title,body.action,iso());return json(result);
  }
