@@ -10,15 +10,15 @@ test('expired Drive refresh grants are distinct from website account authorizati
  finally{globalThis.fetch=previous;}
 });
 test('PWA paths remain inside the existing GitHub subdirectory and Worker root',async()=>{
- const manifest=JSON.parse(await readFile('public/manifest.webmanifest','utf8'));
- for(const base of ['https://yao98r.github.io/bibliotheca/','https://books.test/']){
-  const scope=new URL(manifest.scope,base);assert.equal(new URL(manifest.start_url,base).href,scope.href);assert.equal(new URL(manifest.id,base).href,scope.href);
+ for(const [base,dir] of [['https://yao98r.github.io/bibliotheca/','dist-pages'],['https://books.test/','dist']]){
+  const manifest=JSON.parse(await readFile(dir+'/manifest.webmanifest','utf8'));
+  const scope=new URL(manifest.scope,base);assert.equal(new URL(manifest.start_url,base).href,scope.href);assert.equal(new URL(manifest.id,new URL(base).origin).href,scope.href);
   for(const icon of manifest.icons){assert.ok(new URL(icon.src,base).href.startsWith(scope.href));const png=await readFile('public/'+icon.src),[width,height]=icon.sizes.split('x').map(Number);assert.equal(png.readUInt32BE(16),width);assert.equal(png.readUInt32BE(20),height);}
  }
  for(const dir of ['dist','dist-pages'])for(const file of ['index','go','files','access','viewer','download']){const html=await readFile(dir+'/'+file+'.html','utf8');assert.match(html,/rel="manifest" href="\.\/manifest.webmanifest"/);assert.match(html,/src="\.\/pwa.js" defer/);}
 });
 function serviceWorker(fetchImpl){
- const handlers={},writes=[],deletes=[];const sandbox={URL,Response,Headers,self:{location:{href:'https://books.test/bibliotheca/sw.js'},addEventListener:(name,fn)=>handlers[name]=fn,skipWaiting:async()=>{},clients:{claim:async()=>{}}},fetch:fetchImpl,caches:{open:async()=>({put:async r=>writes.push(r.url),addAll:async()=>{}}),match:async()=>new Response('offline'),keys:async()=>['unrelated-cache','bibliotheca-shell-old','bibliotheca-shell-20261030-v1'],delete:async k=>deletes.push(k)}};
+ const handlers={},writes=[],deletes=[];const sandbox={URL,Response,Headers,self:{location:{href:'https://books.test/bibliotheca/sw.js'},addEventListener:(name,fn)=>handlers[name]=fn,skipWaiting:async()=>{},clients:{claim:async()=>{}}},fetch:fetchImpl,caches:{open:async()=>({put:async r=>writes.push(r.url),addAll:async()=>{}}),match:async()=>new Response('offline'),keys:async()=>['unrelated-cache','bibliotheca-shell-old','bibliotheca-shell-20261030-v2'],delete:async k=>deletes.push(k)}};
  return {handlers,writes,deletes,sandbox};
 }
 test('service worker never stores PDF bytes, API data, OAuth callbacks or authenticated traffic',async()=>{

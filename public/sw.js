@@ -1,4 +1,4 @@
-const CACHE='bibliotheca-shell-20261030-v1';
+const CACHE='bibliotheca-shell-20261030-v2';
 const BASE=new URL('./',self.location.href);
 const STATIC=['offline.html','pwa.js','manifest.webmanifest','icons/icon-192.png','icons/icon-512.png','icons/maskable-512.png','icons/apple-touch-icon.png'].map(p=>new URL(p,BASE).href);
 self.addEventListener('install',event=>{event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(STATIC)).then(()=>self.skipWaiting()));});
