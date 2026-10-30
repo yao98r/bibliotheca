@@ -1,5 +1,5 @@
 export class HttpError extends Error { constructor(status,message){super(message);this.status=status;} }
-export const fail=(status,message)=>{throw new HttpError(status,message);};
+export const fail=(status,message,code)=>{const error=new HttpError(status,message);if(code)error.code=code;throw error;};
 export const now=()=>Math.floor(Date.now()/1000);
 export const iso=()=>new Date().toISOString();
 export const b64=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replaceAll('+','-').replaceAll('/','_').replaceAll('=','');

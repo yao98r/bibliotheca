@@ -30,6 +30,19 @@ test('browser OAuth errors render Chinese HTML while API failures stay JSON',asy
  const api=await call('/api/books');assert.match(api.headers.get('content-type'),/application\/json/);
  const denial=authErrorPage(403,'尚未取得使用權限 <script>','https://yao98r.github.io/bibliotheca/');assert.match(denial,/僅開放管理者指定/);assert.match(denial,/&lt;script&gt;/);assert.doesNotMatch(denial,/<script>/);
 });
+test('source connection checks are owner-only and validate live Drive access without modifying readers',async()=>{
+ assert.equal((await call('/api/drive/check',userToken,{csrf:'test-csrf'})).status,403);
+ const before=await env.DB.prepare("SELECT * FROM users WHERE email='reader@example.com'").first();
+ const previous=globalThis.fetch,key=random(),testEnv={...env,TOKEN_ENCRYPTION_KEY:key,GOOGLE_CLIENT_ID:'connection-check',GOOGLE_CLIENT_SECRET:'secret'};
+ await env.DB.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES ('drive',?)").bind(JSON.stringify({email:'owner@example.com',refresh:await seal('refresh',key),connectedAt:'2026-10-22T00:00:00Z'})).run();
+ globalThis.fetch=async()=>Response.json({error:'invalid_grant'},{status:400});
+ try{const r=await worker.fetch(req('/api/drive/check',ownerToken,{csrf:'test-csrf'}),testEnv,{}),data=await r.json();assert.equal(r.status,200);assert.equal(data.configured,true);assert.equal(data.healthy,false);assert.equal(data.status,'reconnect_required');assert.doesNotMatch(JSON.stringify(data),/refresh_token|secret/);
+ globalThis.fetch=async url=>url==='https://oauth2.googleapis.com/token'?Response.json({access_token:'renewed',expires_in:3600}):Response.json({user:{emailAddress:'owner@example.com'}});
+ const okay=await worker.fetch(req('/api/drive/check',ownerToken,{csrf:'test-csrf'}),testEnv,{});assert.equal((await okay.json()).healthy,true);
+ assert.deepEqual(await env.DB.prepare("SELECT * FROM users WHERE email='reader@example.com'").first(),before);
+ }finally{globalThis.fetch=previous;await env.DB.prepare("DELETE FROM settings WHERE key='drive'").run();}
+});
+
 test('root serves index without redirecting or changing the browser path',async()=>{
  const r=await worker.fetch(new Request('https://books.test/?login_callback=1'),{...env,ASSETS:{fetch:r=>new Response(new URL(r.url).pathname)}},{});
  assert.equal(r.status,200);assert.equal(await r.text(),'/index.html');

@@ -10,7 +10,7 @@
 let me,stop=false,indexWorker,cancelWork,running=false;const $=s=>document.querySelector(s);
 function token(){try{return JSON.parse(localStorage.getItem('bibliotheca-cloudflare-session-v1'))?.token||'';}catch{return '';}}
 async function api(path,body){const r=await fetch(path,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+token(),...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify({...body,csrf:me.csrf}):undefined});const d=await r.json();if(!r.ok){const e=Error(d.error||'操作失敗');e.status=r.status;throw e;}return d;}
-async function refresh(){const d=await api('/api/drive/status');$('#connection').textContent=(d.configured?'已連接：'+d.email:'尚未連線')+'；共 '+d.pdfs+' 份 PDF，'+d.indexed+' 份已備妥閱讀索引，'+d.watermarked+' 份已備妥整本保護。';}
+async function refresh(){const [d,health]=await Promise.all([api('/api/drive/status'),api('/api/drive/check',{})]);$('#connection').textContent=health.message+' 共 '+d.pdfs+' 份 PDF，'+d.indexed+' 份已備妥閱讀索引，'+d.watermarked+' 份已備妥整本保護。';}
 $('#connect').onclick=async()=>{try{const d=await api('/api/drive/connect',{});location.href=d.authorizationUrl;}catch(e){$('#status').textContent=e.message;}};
 $('#restore').onclick=async()=>{const button=$('#restore');button.disabled=true;try{const d=await api('/api/catalog/restore',{apply:true});$('#restoration').textContent='已修正 '+d.changes.length+' 筆分類；'+d.conflicts.length+' 筆對應衝突待確認。';}catch(e){$('#restoration').textContent=e.message;}finally{button.disabled=false;}};
 function build(job,watermark=false){return new Promise((resolve,reject)=>{

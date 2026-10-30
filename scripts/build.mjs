@@ -3,6 +3,7 @@ import vm from 'node:vm';
 const github=process.argv.includes('--github');
 const output=github?'dist-pages':'dist';
 const backend='https://bibliotheca-backend.bibliotheca-cloudflare.workers.dev';
+const pwaHead='<link rel="manifest" href="./manifest.webmanifest"><link rel="apple-touch-icon" href="./icons/apple-touch-icon.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="天眼書庫"><script src="./pwa.js" defer></script>';
 await mkdir(output+'/assets',{recursive:true});
 for(const name of ['index','files','go','viewer','access','download']) {
  let html=await readFile(`${name}.html`,'utf8');
@@ -33,12 +34,13 @@ for(const name of ['index','files','go','viewer','access','download']) {
  html=html.replace('bookId:context.bookId,action:context.action','bookId:context.bookId,action:context.action,...(context.asset?{asset:context.asset}:{})');
  html=html.replace(/\$\('download'\)\.onclick=async\(\)=>\{const popup=window\.open[\s\S]*?finally\{\$\('download'\)\.disabled=false;\}\};/,`$('download').onclick=async()=>{$('download').disabled=true;try{const result=await api('/api/viewer/download',{csrf:me.csrf,ticket:params.get('ticket')});location.href=result.url;}catch(e){$('status').textContent=e.message;}finally{$('download').disabled=false;}};`);
  if(['index','files','go'].includes(name)) html=html.replace('<footer>',`<p><a href="${backend}/manage.html">管理者：Drive 連線與書目同步</a></p><footer>`);
+ html=html.replace('</head>',pwaHead+'</head>');
  for(const match of html.matchAll(/<script(\s[^>]*)?>([\s\S]*?)<\/script>/g))new vm.Script(match[1]?.includes('module')?'(async()=>{'+match[2]+'})':match[2],{filename:name+'.html'});
  await writeFile(`${output}/${name}.html`,html);
 }
 if(!github){
  const manage=await readFile('public/manage.html','utf8');for(const match of manage.matchAll(/<script>([\s\S]*?)<\/script>/g))new vm.Script(match[1],{filename:'manage.html'});
- await cp('public/manage.html',output+'/manage.html');
+ await writeFile(output+'/manage.html',manage.replace('</head>',pwaHead+'</head>'));
  await cp('public/pdf-index-worker.js',output+'/assets/pdf-index-worker.js');
  await cp('public/pdf-index-builder.mjs',output+'/assets/pdf-index-builder.mjs');
  for(const file of ['pdf-watermark-worker.js','pdf-watermark-builder.mjs','pdf-watermark-format.mjs'])await cp('public/'+file,output+'/assets/'+file);
@@ -56,5 +58,7 @@ await cp('node_modules/pdf-lib/LICENSE.md',output+'/assets/PDF-LIB-LICENSE');
 await cp('node_modules/pdfjs-dist/build/pdf.worker.min.mjs',output+'/assets/pdf.worker.min.mjs');
 for(const dir of ['cmaps','standard_fonts','wasm']) await cp(`node_modules/pdfjs-dist/${dir}`,`${output}/assets/${dir}`,{recursive:true});
 await cp('PDFJS-LICENSE',output+'/PDFJS-LICENSE');
+for(const file of ['manifest.webmanifest','sw.js','pwa.js','offline.html'])await cp('public/'+file,output+'/'+file);
+await cp('public/icons',output+'/icons',{recursive:true});
 await writeFile(output+'/.nojekyll','');
 console.log('Built '+output+' with local PDF.js assets; inline scripts parsed successfully.');

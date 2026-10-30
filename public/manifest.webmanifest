@@ -1,0 +1,33 @@
+{
+  "id": "./",
+  "name": "天眼書庫 · Bibliotheca",
+  "short_name": "天眼書庫",
+  "description": "參考書與模擬考查詢、受控閱讀及答案入口。",
+  "lang": "zh-Hant",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f1e4cd",
+  "theme_color": "#25231e",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
+

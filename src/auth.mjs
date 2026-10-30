@@ -28,7 +28,13 @@ export function csrf(request,body,user,env){
 }
 export async function googleToken(env,params){
  const r=await fetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:env.GOOGLE_CLIENT_ID,client_secret:env.GOOGLE_CLIENT_SECRET,...params})});
- if(!r.ok)fail(502,'Google 授權失效或設定有誤，請重新連線');return r.json();
+ const data=await r.json().catch(()=>({}));
+ if(!r.ok){
+  if(params.grant_type==='refresh_token'&&data.error==='invalid_grant')fail(503,'書庫來源連線已到期，請管理者重新連接 Google Drive；你的網站使用權限仍然有效。','DRIVE_RECONNECT_REQUIRED');
+  if(params.grant_type==='refresh_token'&&['invalid_client','deleted_client','unauthorized_client'].includes(data.error))fail(503,'書庫的 Google 連線設定有誤，請管理者檢查設定。','DRIVE_CONFIGURATION_ERROR');
+  fail(502,'Google 連線暫時無法完成，請稍後重試；若持續發生，請聯絡管理者。');
+ }
+ return data;
 }
 export async function driveToken(env){
  if(!env.TOKEN_ENCRYPTION_KEY)fail(503,'尚未設定憑證加密金鑰');

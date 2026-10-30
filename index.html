@@ -132,7 +132,8 @@ function setupAccess(){
  accessList=el('div',undefined,'user-list');accessPanel.append(form,accessList);$('adminPanel').prepend(accessPanel);
 }
 async function accessUsers(){
- if(!me.admin)return;setupAccess();const [data,connection,policy]=await Promise.all([api('/api/allowlist'),api('/api/drive/status'),api('/api/access-policy')]);renderPublicPolicy(policy);accessList.replaceChildren(el('p',connection.configured?'書籍讀取帳號已設定；每次存取仍會驗證天眼權限。':'書籍服務尚未連線，請完成管理者設定。','note'));
+ if(!me.admin)return;setupAccess();const [data,connection,policy]=await Promise.all([api('/api/allowlist'),api('/api/drive/check',{csrf:me.csrf}),api('/api/access-policy')]);renderPublicPolicy(policy);accessList.replaceChildren(el('p',connection.message||'書庫連線狀態尚未確認。','note'));
+ if(!connection.healthy){const reconnect=el('a','開啟管理頁重新連接書庫');reconnect.href=BACKEND+'/manage.html';accessList.append(reconnect);}
  for(const u of data.users){const card=el('form',undefined,'user-card');card.append(el('h3',u.email),el('p',u.owner?'管理者 · 固定保留完整權限':u.blocked?'已停用 · 全站開放時仍無法登入':u.inherited?'使用全站預設'+(u.active?'':' · 目前未開放'):'個別權限設定','note'));if(u.google_name)card.append(el('p','Google 姓名：'+u.google_name+' · 最近登入：'+(u.last_login?date(u.last_login):'尚未登入'),'note'));if(!u.owner)card.append(el('p','今日已取得 '+(u.downloads_today||0)+' 份','note'));
  const inputs=profileFields(u),fields=el('div',undefined,'user-fields');fields.append(...inputs.fields);const actions=el('div',undefined,'user-actions'),save=el('button',u.inherited&&!u.blocked?'儲存為個別權限':'儲存設定','primary'),message=el('span','','save-status');save.type='submit';actions.append(save,message);
  const mutate=async action=>{save.disabled=true;try{await api('/api/allowlist',{csrf:me.csrf,email:u.email,action,...(action==='add'?profileBody(inputs):{})});await accessUsers();}catch(e){message.textContent=e.message;}finally{save.disabled=false;}};

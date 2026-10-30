@@ -96,6 +96,16 @@ async function handle(request,env,ctx){
    return json({users});
  }
  if(p==='/api/drive/status'&&method==='GET'){admin(u);const d=await setting(env,'drive'),counts=await one(env,"SELECT COUNT(*) pdfs,COALESCE(SUM(EXISTS(SELECT 1 FROM pdf_headers h WHERE h.size=a.size AND h.md5=a.md5)),0) indexed_count,COALESCE(SUM(EXISTS(SELECT 1 FROM pdf_watermarks w WHERE w.size=a.size AND w.md5=a.md5 AND w.version=2)),0) protected_count FROM assets a WHERE mime='application/pdf'");return json({configured:!!d,email:d?.email||null,books:(await one(env,'SELECT COUNT(*) n FROM books')).n,pdfs:counts.pdfs,indexed:counts.indexed_count,watermarked:counts.protected_count});}
+ if(p==='/api/drive/check'&&body){
+  admin(u);const connection=await setting(env,'drive');
+  if(!connection)return json({configured:false,healthy:false,status:'not_connected',message:'尚未連接 Google Drive，請先連接書庫來源。'});
+  try{
+   const token=await driveToken(env),r=await fetch('https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)',{headers:{Authorization:`Bearer ${token}`}});
+   if(!r.ok)fail(503,'無法確認書庫來源的讀取權限，請管理者重新連接 Google Drive。','DRIVE_RECONNECT_REQUIRED');
+   const about=await r.json();if(about.user?.emailAddress?.toLowerCase()!==env.OWNER_EMAIL.toLowerCase())fail(503,'書庫來源帳號與管理者不符，請重新連接。','DRIVE_RECONNECT_REQUIRED');
+   return json({configured:true,healthy:true,status:'ready',email:connection.email,connectedAt:connection.connectedAt,message:'書庫連線正常，已確認 Google Drive 可讀取。'});
+  }catch(e){return json({configured:true,healthy:false,status:e.code==='DRIVE_RECONNECT_REQUIRED'?'reconnect_required':'unavailable',connectedAt:connection.connectedAt,message:e.status?e.message:'書庫連線檢查暫時失敗，請稍後重試。'});}
+ }
  if(p==='/api/drive/connect'&&body){admin(u);const auth=await beginAuth(request,env,u);return json({authorizationUrl:auth.headers.get('Location')},{headers:{'Set-Cookie':auth.headers.get('Set-Cookie')}});}
  if(p==='/api/drive/sync'&&body){admin(u);return json(await syncStep(env));}
  if(p==='/api/catalog/restore'&&body){
@@ -196,7 +206,7 @@ export default {async fetch(request,env,ctx){
  const headers=limited?{'Retry-After':String(86400-now()%86400)}:{};
  if(['/auth','/auth/callback'].includes(new URL(request.url).pathname)){
    response=new Response(authErrorPage(status,message,env.FRONTEND_URL||new URL('/',request.url).href),{status,headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
- }else response=json({error:message},{status,headers});
+   }else response=json({error:message,...(['DRIVE_RECONNECT_REQUIRED','DRIVE_CONFIGURATION_ERROR'].includes(e.code)?{code:e.code}:{})},{status,headers});
  }
  const h=new Headers(response.headers);h.set('X-Content-Type-Options','nosniff');h.set('Referrer-Policy','no-referrer');h.set('X-Frame-Options','DENY');
  if(allowedOrigin(request,env)){h.set('Access-Control-Allow-Origin',request.headers.get('Origin'));h.set('Access-Control-Expose-Headers','Content-Disposition, X-PDF-Bytes, X-PDF-Watermark');}
