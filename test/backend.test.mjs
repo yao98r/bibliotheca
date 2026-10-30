@@ -2,8 +2,10 @@ import {test,before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {Miniflare} from 'miniflare';
+import {generateKeyPair,exportJWK,SignJWT} from 'jose';
 import worker,{quota} from '../src/worker.mjs';
-import {hash,random,now,replaceTrace,permission,seal,unseal} from '../src/core.mjs';
+import {hash,random,now,day,replaceTrace,permission,seal,unseal} from '../src/core.mjs';
+import {beginAuth,loginAllowed} from '../src/auth.mjs';
 import {singlePage,fullFile,indexFor} from '../src/drive.mjs';
 import {loginReturn} from '../src/origins.mjs';
 import {authErrorPage} from '../src/auth-error.mjs';
@@ -79,13 +81,71 @@ test('owner can inspect PDF and index coverage independently of folder groups',a
  const response=await call('/api/drive/status',ownerToken);assert.equal(response.status,200);const status=await response.json();assert.equal(status.pdfs,3);assert.equal(status.books,2);assert.equal(status.indexed,0);
 });
 test('blocked user loses active session immediately',async()=>{await env.DB.prepare("UPDATE users SET blocked=1 WHERE email='reader@example.com'").run();assert.equal((await call('/api/me',userToken)).status,403);await env.DB.prepare("UPDATE users SET blocked=0 WHERE email='reader@example.com'").run();});
+test('issued PDF tickets are bound to the account and recheck permission on every request',async()=>{
+ const raw=random(),code='ABCD-EFGH';
+ await env.DB.prepare('INSERT INTO tickets VALUES (?,?,?,?,?,?,?,?,NULL,?)').bind(await hash(raw),'reader@example.com','ref','ref','open','view',code,new Date().toISOString(),now()+600).run();
+ try{
+  assert.equal((await call('/api/viewer?ticket='+raw,ownerToken)).status,403);
+  await env.DB.prepare("UPDATE users SET access_scope='mock' WHERE email='reader@example.com'").run();
+  assert.equal((await call('/api/viewer?ticket='+raw,userToken)).status,403);
+  await env.DB.prepare("UPDATE users SET access_scope='ref',view_enabled=0 WHERE email='reader@example.com'").run();
+  assert.equal((await call('/api/viewer?ticket='+raw,userToken)).status,403);
+  await env.DB.prepare("UPDATE users SET view_enabled=1,blocked=1 WHERE email='reader@example.com'").run();
+  assert.equal((await call('/api/viewer?ticket='+raw,userToken)).status,403);
+ }finally{await env.DB.prepare("UPDATE users SET access_scope='ref',view_enabled=1,blocked=0 WHERE email='reader@example.com'").run();await env.DB.prepare('DELETE FROM tickets WHERE hash=?').bind(await hash(raw)).run();}
+});
 test('owner cannot be blocked',async()=>{assert.equal((await call('/api/allowlist',ownerToken,{csrf:'test-csrf',email:'owner@example.com',action:'remove'})).status,403);});
 test('PKCE exchange checks verifier and only succeeds once under concurrency',async()=>{
  const code=random(),state=random(),verifier='a'.repeat(64);await env.DB.prepare('INSERT INTO exchanges VALUES (?,?,?,?,?)').bind(await hash(code),'reader@example.com',state,await hash(verifier),now()+60).run();
  assert.equal((await call('/api/exchange',null,{code,state,verifier:'b'.repeat(64)})).status,401);
  const results=await Promise.all([call('/api/exchange',null,{code,state,verifier}),call('/api/exchange',null,{code,state,verifier})]);assert.deepEqual(results.map(r=>r.status).sort(),[200,401]);
 });
-test('repeated event ID does not duplicate audit counts',async()=>{for(let n=0;n<2;n++)assert.equal((await call('/api/event',userToken,{csrf:'test-csrf',id:'same-id',action:'portal_view'})).status,200);assert.equal((await env.DB.prepare("SELECT COUNT(*) n FROM events WHERE id='same-id'").first()).n,1);});
+test('portal visit is recorded at most once per user per day even for different event IDs',async()=>{for(let n=0;n<3;n++)assert.equal((await call('/api/event',userToken,{csrf:'test-csrf',id:'unique-'+n,action:'portal_view'})).status,200);assert.equal((await env.DB.prepare('SELECT COUNT(*) n FROM events WHERE email=? AND id=?').bind('reader@example.com','visit:'+day()).first()).n,1);});
+test('anonymous login creates no D1 state and rejects tampered or mismatched browser cookies',async()=>{
+ const testEnv={...env,GOOGLE_CLIENT_ID:'test-client',GOOGLE_CLIENT_SECRET:'test-secret',TOKEN_ENCRYPTION_KEY:random()};
+ const state=random(),verifier=random();const url='https://books.test/auth?'+new URLSearchParams({state,challenge:await hash(verifier)});
+ const before=(await env.DB.prepare('SELECT COUNT(*) n FROM oauth').first()).n;
+ const r=await beginAuth(new Request(url),testEnv);assert.equal(r.status,302);
+ assert.equal((await env.DB.prepare('SELECT COUNT(*) n FROM oauth').first()).n,before);
+ const cookie=r.headers.get('Set-Cookie').split(';')[0],googleState=new URL(r.headers.get('Location')).searchParams.get('state');
+ const pending=JSON.parse(await unseal(cookie.slice('oauth_binding='.length),testEnv.TOKEN_ENCRYPTION_KEY));assert.equal(pending.state,googleState);assert.equal(pending.clientState,state);assert.ok(pending.expires>now());
+ const mismatch=await worker.fetch(new Request('https://books.test/auth/callback?state='+random(),{headers:{Cookie:cookie}}),testEnv,{});assert.equal(mismatch.status,400);
+ const invalid=await worker.fetch(new Request('https://books.test/auth/callback?state='+googleState,{headers:{Cookie:cookie.slice(0,-1)+'!'}}),testEnv,{});assert.ok([400,403].includes(invalid.status));
+ const expired=await seal(JSON.stringify({...pending,expires:now()-1}),testEnv.TOKEN_ENCRYPTION_KEY);
+ assert.equal((await worker.fetch(new Request('https://books.test/auth/callback?state='+googleState,{headers:{Cookie:'oauth_binding='+expired}}),testEnv,{})).status,400);
+});
+test('login admission rejects strangers and blocked users while preserving existing policy',async()=>{
+ await assert.rejects(loginAllowed(env,'stranger@example.com',null),e=>e.status===403);
+ const reader=await env.DB.prepare("SELECT * FROM users WHERE email='reader@example.com'").first();
+ await loginAllowed(env,'reader@example.com',reader);
+ await assert.rejects(loginAllowed(env,'reader@example.com',{...reader,blocked:1}),e=>e.status===403);
+ await loginAllowed({...env,DB:{prepare:()=>({bind:()=>({first:async()=>({value:JSON.stringify({enabled:true,defaultTier:'catalog',scope:'both',dailyLimit:null})})})})}},'new@example.com',null);
+});
+test('full OAuth callback admits an allowed user and rejects an unknown user without writing a user row',async()=>{
+ const keys=await generateKeyPair('RS256',{extractable:true}),jwk=await exportJWK(keys.publicKey);Object.assign(jwk,{kid:'fixture',alg:'RS256',use:'sig'});
+ const testEnv={...env,GOOGLE_CLIENT_ID:'test-client',GOOGLE_CLIENT_SECRET:'test-secret',TOKEN_ENCRYPTION_KEY:random()};
+ const original=globalThis.fetch;let currentNonce,currentEmail,usedCode;
+ globalThis.fetch=async(url)=>{
+  if(String(url)==='https://www.googleapis.com/oauth2/v3/certs')return Response.json({keys:[jwk]});
+  if(String(url)==='https://oauth2.googleapis.com/token'){
+   if(usedCode)return Response.json({error:'invalid_grant'},{status:400});usedCode=true;
+   const id_token=await new SignJWT({nonce:currentNonce,email:currentEmail,email_verified:true,name:'Test Reader'}).setProtectedHeader({alg:'RS256',kid:'fixture'}).setIssuer('https://accounts.google.com').setAudience('test-client').setSubject('fixture-subject').setIssuedAt().setExpirationTime('5m').sign(keys.privateKey);
+   return Response.json({id_token});
+  }
+  throw Error('unexpected fetch');
+ };
+ try{
+  for(const [email,expected] of [['reader@example.com',200],['stranger@example.com',403]]){
+   currentEmail=email;usedCode=false;const clientState=random(),verifier='v'.repeat(64);
+   const start=await beginAuth(new Request('https://books.test/auth?'+new URLSearchParams({state:clientState,challenge:await hash(verifier)})),testEnv);
+   const target=new URL(start.headers.get('Location'));currentNonce=target.searchParams.get('nonce');
+   const url='https://books.test/auth/callback?'+new URLSearchParams({state:target.searchParams.get('state'),code:'fixture-code'}),cookie=start.headers.get('Set-Cookie').split(';')[0];
+   const result=await worker.fetch(new Request(url,{headers:{Cookie:cookie}}),testEnv,{});assert.equal(result.status,expected);
+   if(expected===200){const html=await result.text(),dest=html.match(/location\.replace\(("[^"]+")\)/);assert.ok(dest);const fragment=new URL(JSON.parse(dest[1])).hash.slice(1),params=new URLSearchParams(fragment);const exchange=await worker.fetch(req('/api/exchange',null,{code:params.get('code'),state:clientState,verifier}),testEnv,{});assert.equal(exchange.status,200);}
+   else assert.equal(await env.DB.prepare("SELECT email FROM users WHERE email='stranger@example.com'").first(),null);
+  }
+ }finally{globalThis.fetch=original;}
+});
 test('default policy never reactivates blocked users',()=>{assert.equal(permission({blocked:1,individual:0},{enabled:true,defaultTier:'download',scope:'both',dailyLimit:null},false).active,false);});
 test('simultaneous distinct downloads cannot exceed the daily quota; repeat file is free',async()=>{
  const u={email:'quota@example.com',daily_download_limit:2};const results=await Promise.allSettled(Array.from({length:8},(_,i)=>quota(env,u,'asset-'+i)));
