@@ -18,11 +18,12 @@ test('PWA paths remain inside the existing GitHub subdirectory and Worker root',
  for(const dir of ['dist','dist-pages'])for(const file of ['index','go','files','access','viewer','download']){const html=await readFile(dir+'/'+file+'.html','utf8');assert.match(html,/rel="manifest" href="\.\/manifest.webmanifest"/);assert.match(html,/src="\.\/pwa.js" defer/);}
 });
 function serviceWorker(fetchImpl){
- const handlers={},writes=[],deletes=[];const sandbox={URL,Response,Headers,self:{location:{href:'https://books.test/bibliotheca/sw.js'},addEventListener:(name,fn)=>handlers[name]=fn,skipWaiting:async()=>{},clients:{claim:async()=>{}}},fetch:fetchImpl,caches:{open:async()=>({put:async r=>writes.push(r.url),addAll:async()=>{}}),match:async()=>new Response('offline'),keys:async()=>['unrelated-cache','bibliotheca-shell-old','bibliotheca-shell-20261030-v2'],delete:async k=>deletes.push(k)}};
+ const handlers={},writes=[],deletes=[];const sandbox={URL,Request,Response,Headers,self:{location:{href:'https://books.test/bibliotheca/sw.js'},addEventListener:(name,fn)=>handlers[name]=fn,skipWaiting:async()=>{},clients:{claim:async()=>{}}},fetch:fetchImpl,caches:{open:async()=>({put:async r=>writes.push(r.url),addAll:async requests=>{assert.ok(requests.every(r=>r.cache==='reload'));}}),match:async()=>new Response('offline'),keys:async()=>['unrelated-cache','bibliotheca-shell-old','bibliotheca-shell-20261030-v3'],delete:async k=>deletes.push(k)}};
  return {handlers,writes,deletes,sandbox};
 }
 test('service worker never stores PDF bytes, API data, OAuth callbacks or authenticated traffic',async()=>{
- const sw=serviceWorker(async()=>new Response('public'));vm.runInNewContext(await readFile('public/sw.js','utf8'),sw.sandbox);
+ const sw=serviceWorker(async(_,options)=>{assert.equal(options.cache,'no-cache');return new Response('public');});vm.runInNewContext(await readFile('public/sw.js','utf8'),sw.sandbox);
+ let installed;sw.handlers.install({waitUntil(p){installed=p;}});await installed;
  for(const path of ['api/me','api/books','api/fast-file?ticket=secret','file?ticket=secret','viewer.html?ticket=secret','index.html?login_callback=1','assets/file.pdf','../other/pwa.js']){
   let intercepted=false;sw.handlers.fetch({request:{url:'https://books.test/bibliotheca/'+path,method:'GET',headers:new Headers(),mode:'navigate'},respondWith(){intercepted=true;}});assert.equal(intercepted,false,path);
  }
