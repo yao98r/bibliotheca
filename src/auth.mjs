@@ -78,7 +78,7 @@ export async function callback(request,env){
  }
  if(url.searchParams.has('error'))fail(400,'Google 授權未完成，請重試');
  const tokens=await googleToken(env,{code:url.searchParams.get('code')||'',code_verifier:pending.verifier,grant_type:'authorization_code',redirect_uri:url.origin+'/auth/callback'});
- let payload;try{({payload}=await jwtVerify(tokens.id_token,jwks,{issuer:['https://accounts.google.com','accounts.google.com'],audience:env.GOOGLE_CLIENT_ID}));}catch{fail(401,'Google 身分驗證失敗');}
+ let payload;try{({payload}=await jwtVerify(tokens.id_token,jwks,{algorithms:['RS256'],issuer:['https://accounts.google.com','accounts.google.com'],audience:env.GOOGLE_CLIENT_ID}));}catch{fail(401,'Google 身分驗證失敗');}
  if(payload.nonce!==pending.nonce||payload.email_verified!==true||typeof payload.email!=='string'||!payload.sub)fail(401,'Google 身分驗證失敗');
  const email=payload.email.toLowerCase();
  if(pending.drive){

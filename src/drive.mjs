@@ -1,6 +1,7 @@
 import {fail,bounded,unb64,replaceTrace} from './core.mjs';
 import {driveToken,one,run,rows} from './auth.mjs';
 import {appendPdfTail} from './pdf-stream.mjs';
+import {personalizeIndexedPage} from './page-watermark.mjs';
 import {restoredCategory} from './catalog.mjs';
 import {loadWatermarkTemplate,watermarkProof,personalizeWatermark,composeWatermarkedPdf,composeNativeWatermarkedPdf} from './backend-watermark.mjs';
 const FOLDER='application/vnd.google-apps.folder';
@@ -72,7 +73,7 @@ export async function indexFor(env,asset,token){
  if(index.asset!==asset.id||index.size!==asset.size||index.md5!==asset.md5||!Array.isArray(index.pages))fail(409,'閱覽索引與原檔不符，請重建索引');
  return index;
 }
-export async function singlePage(env,asset,index,page,code,token){
+export async function singlePage(env,asset,index,page,code,token,onWatermark=()=>{}){
  let entry;
  if(index.imported){
    const parts=await rows(env,'SELECT data FROM pdf_pages WHERE asset=? AND page=? ORDER BY part',index.indexAsset||asset.id,page);
@@ -94,6 +95,8 @@ export async function singlePage(env,asset,index,page,code,token){
    total+=bytes.length;if(total>16*1024*1024)fail(413,'頁面過大');chunks.push(bytes);
  }
  if(total!==entry.length)fail(409,'頁面索引長度不符');
+ const stamped=personalizeIndexedPage(entry,chunks,code);
+ if(stamped){onWatermark();return new Blob([stamped],{type:'application/pdf'}).stream();}
  return new Blob(chunks,{type:'application/pdf'}).stream();
 }
 export async function fullFile(env,asset,index,code,token){

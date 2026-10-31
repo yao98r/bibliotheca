@@ -95,6 +95,36 @@ test('issued PDF tickets are bound to the account and recheck permission on ever
  }finally{await env.DB.prepare("UPDATE users SET access_scope='ref',view_enabled=1,blocked=0 WHERE email='reader@example.com'").run();await env.DB.prepare('DELETE FROM tickets WHERE hash=?').bind(await hash(raw)).run();}
 });
 test('owner cannot be blocked',async()=>{assert.equal((await call('/api/allowlist',ownerToken,{csrf:'test-csrf',email:'owner@example.com',action:'remove'})).status,403);});
+
+test('all delivery routes reject stolen, expired and revoked tickets before touching Drive',async()=>{
+ const paths=['/api/viewer','/api/page','/api/fast-file','/file','/api/download-context'];
+ const view=random(),download=random(),originalFetch=globalThis.fetch;let upstream=0;
+ globalThis.fetch=async()=>{upstream++;throw Error('Denied requests must not reach Drive');};
+ const before=await env.DB.prepare("SELECT * FROM users WHERE email='reader@example.com'").first();
+ try{
+  await env.DB.prepare("UPDATE users SET access_scope='both',view_enabled=1,download_mode='download',reading_mode='fast' WHERE email='reader@example.com'").run();
+  for(const [raw,action,kind] of [[view,'answer_open','view'],[download,'answer_download','download']])await env.DB.prepare('INSERT INTO tickets VALUES (?,?,?,?,?,?,?,?,NULL,?)').bind(await hash(raw),'reader@example.com','ref','ref',action,kind,kind==='view'?'ABCD-EFGH':'JKLM-NPQR',new Date().toISOString(),now()+600).run();
+  for(const path of paths){const raw=path==='/file'||path==='/api/download-context'?download:view;assert.equal((await call(path+'?ticket='+raw+'&page=1',ownerToken)).status,403);assert.equal((await call(path+'?ticket='+raw+'&page=1')).status,401);}
+  for(const raw of [view,download])await env.DB.prepare('UPDATE tickets SET expires=? WHERE hash=?').bind(now()-1,await hash(raw)).run();
+  for(const path of paths)assert.equal((await call(path+'?ticket='+(path==='/file'||path==='/api/download-context'?download:view)+'&page=1',userToken)).status,403);
+  for(const raw of [view,download])await env.DB.prepare('UPDATE tickets SET expires=? WHERE hash=?').bind(now()+600,await hash(raw)).run();
+  await env.DB.prepare("UPDATE users SET blocked=1 WHERE email='reader@example.com'").run();
+  for(const path of paths)assert.equal((await call(path+'?ticket='+(path==='/file'||path==='/api/download-context'?download:view)+'&page=1',userToken)).status,403);
+  await env.DB.prepare("UPDATE users SET blocked=0,view_enabled=0,download_mode='view' WHERE email='reader@example.com'").run();
+  for(const path of paths)assert.equal((await call(path+'?ticket='+(path==='/file'||path==='/api/download-context'?download:view)+'&page=1',userToken)).status,403);
+  assert.equal(upstream,0);
+ }finally{globalThis.fetch=originalFetch;await env.DB.prepare('UPDATE users SET access_scope=?,view_enabled=?,download_mode=?,reading_mode=?,blocked=? WHERE email=?').bind(before.access_scope,before.view_enabled,before.download_mode,before.reading_mode,before.blocked,before.email).run();for(const raw of [view,download])await env.DB.prepare('DELETE FROM tickets WHERE hash=?').bind(await hash(raw)).run();}
+});
+
+test('exhausted download quota is rejected before Google Drive is contacted',async()=>{
+ const raw=random(),original=globalThis.fetch,before=await env.DB.prepare("SELECT * FROM users WHERE email='reader@example.com'").first();let calls=0;
+ try{
+  await env.DB.prepare("UPDATE users SET access_scope='both',download_mode='download',daily_download_limit=0 WHERE email='reader@example.com'").run();
+  await env.DB.prepare('INSERT INTO tickets VALUES (?,?,?,?,?,?,?,?,NULL,?)').bind(await hash(raw),'reader@example.com','ref','ref','download_request','download','ABCD-EFGH',new Date().toISOString(),now()+600).run();
+  globalThis.fetch=async()=>{calls++;throw Error('Unexpected upstream read');};
+  assert.equal((await call('/file?ticket='+raw,userToken)).status,429);assert.equal(calls,0);
+ }finally{globalThis.fetch=original;await env.DB.prepare('UPDATE users SET access_scope=?,download_mode=?,daily_download_limit=? WHERE email=?').bind(before.access_scope,before.download_mode,before.daily_download_limit,before.email).run();await env.DB.prepare('DELETE FROM tickets WHERE hash=?').bind(await hash(raw)).run();}
+});
 test('PKCE exchange checks verifier and only succeeds once under concurrency',async()=>{
  const code=random(),state=random(),verifier='a'.repeat(64);await env.DB.prepare('INSERT INTO exchanges VALUES (?,?,?,?,?)').bind(await hash(code),'reader@example.com',state,await hash(verifier),now()+60).run();
  assert.equal((await call('/api/exchange',null,{code,state,verifier:'b'.repeat(64)})).status,401);

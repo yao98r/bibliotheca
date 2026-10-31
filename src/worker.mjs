@@ -3,6 +3,7 @@ import {one,run,rows,setting,setSetting,session,jsonBody,csrf,beginAuth,callback
 import {syncStep,assetFor,verifyAsset,indexFor,singlePage,fullFile,watermarkedFullFile} from './drive.mjs';
 import {allowedOrigin} from './origins.mjs';
 import {authErrorPage} from './auth-error.mjs';
+import {checkTicketRate,storeLimitedTicket,checkDownloadQuota} from './ticket-limits.mjs';
 import {catalogEntries,categoryRepairs,restoredBooks,restoredSource} from './catalog.mjs';
 import {nextIndex,indexSource,startIndex,storeIndexPage,storeIndexPages,finishIndex,indexError} from './indexing.mjs';
 import {nextWatermark,watermarkSource,storeWatermark,watermarkRow} from './watermark-indexing.mjs';
@@ -41,18 +42,16 @@ async function prepare(env,u,b,body,origin){
  if(!selected)fail(404,'此書尚未設定答案檔');
  const a=await assetFor(env,b.id,selected);
  if(a.mime==='application/vnd.google-apps.folder')return {url:origin+'/files?'+new URLSearchParams({book:b.id,folder:a.id})};
+ await checkTicketRate(env,u.email);
  const token=await driveToken(env);await verifyAsset(env,a,token);const index=await indexFor(env,a,token);
  if(isDownload(body.action)&&env.PDF_WATERMARK_ROLLOUT!=='prepare'&&!await watermarkRow(env,a))fail(409,'這份 PDF 正在準備整本保護，完成後即可下載；目前仍可逐頁閱讀。');
  const raw=random(),code=traceCode(),kind=isDownload(body.action)?'download':'view';
- await env.DB.batch([
-  env.DB.prepare('INSERT INTO tickets VALUES (?,?,?,?,?,?,?,?,NULL,?)').bind(await hash(raw),u.email,b.id,a.id,body.action,kind,code,iso(),now()+3600),
-  env.DB.prepare('INSERT INTO events VALUES (?,?,?,?,?,?)').bind('trace:'+code+':source:'+a.md5,u.email,b.id,a.name,'trace_issue',iso())
- ]);
+ await storeLimitedTicket(env,{hash:await hash(raw),email:u.email,book:b.id,asset:a.id,action:body.action,kind,code,createdAt:iso(),expires:now()+3600,name:a.name},a.md5);
  return {url:origin+(kind==='download'?'/file':'/viewer')+'?ticket='+raw,title:a.name.replace(/\.pdf$/i,'')};
 }
 async function handle(request,env,ctx){
  const url=new URL(request.url),p=url.pathname,method=request.method;
- if(p==='/api/health')return json({ok:true,oauthConfigured:!!(env.GOOGLE_CLIENT_ID&&env.GOOGLE_CLIENT_SECRET),watermarkVersion:2,watermarkMode:env.PDF_WATERMARK_ROLLOUT==='prepare'?'prepare':'required'});
+ if(p==='/api/health')return json({ok:true,oauthConfigured:!!(env.GOOGLE_CLIENT_ID&&env.GOOGLE_CLIENT_SECRET),securityVersion:1,watermarkVersion:2,watermarkMode:env.PDF_WATERMARK_ROLLOUT==='prepare'?'prepare':'required'});
  if(p==='/auth'&&method==='GET')return beginAuth(request,env);
  if(p==='/auth/callback'&&method==='GET')return callback(request,env);
  if(p==='/api/exchange'&&method==='POST')return exchange(request,env);
@@ -165,14 +164,14 @@ async function handle(request,env,ctx){
    if(p==='/file'&&t.kind!=='download')fail(403,'不是下載憑證');
    if(p!=='/file'&&t.kind!=='view')fail(403,'不是閱覽憑證');
    if(p==='/api/fast-file'&&(u.reading_mode!=='fast'||u.download_mode!=='download'))fail(403,'沒有快速翻閱權限');
+   if(p==='/file'||p==='/api/fast-file')await checkDownloadQuota(env,u,a.id,day());
    const token=await driveToken(env);await verifyAsset(env,a,token);const index=await indexFor(env,a,token);
    const pageCount=index.pageCount??index.pages.length;
    const watermark=p==='/api/page'?null:await watermarkRow(env,a,p!=='/api/viewer'),fullAvailable=!!watermark||env.PDF_WATERMARK_ROLLOUT==='prepare';
    if(p==='/api/viewer')return json({title:a.name.replace(/\.pdf$/i,''),pages:pageCount,traceCode:t.trace_code,canDownload:u.download_mode==='download'&&fullAvailable,readingMode:fullAvailable?u.reading_mode:'protected',watermark:watermark?'server-v2':'legacy',fullDownloadAvailable:fullAvailable});
-   let stream;
+   let stream,length,kind='legacy-page';
    const page=p==='/api/page'?Number(url.searchParams.get('page')):null;
-   if(p==='/api/page'){if(!Number.isInteger(page)||page<1||page>pageCount)fail(400,'頁碼無效');stream=await singlePage(env,a,index,page,t.trace_code,token);}
-   let length,kind='legacy-page';
+   if(p==='/api/page'){if(!Number.isInteger(page)||page<1||page>pageCount)fail(400,'頁碼無效');stream=await singlePage(env,a,index,page,t.trace_code,token,()=>{kind='server-page-v2';});}
    if(page===null){
     if(watermark){const result=await watermarkedFullFile(env,a,watermark,t,token);stream=result.stream;length=result.length;kind='server-v2';}
     else if(env.PDF_WATERMARK_ROLLOUT==='prepare'){stream=await fullFile(env,a,index,t.trace_code,token);length=a.size+(index.tailEncoding==='base64'?unb64(index.tail).length:new TextEncoder().encode(index.tail).length);kind='legacy';}
@@ -205,7 +204,7 @@ export default {async fetch(request,env,ctx){
  const status=limited?503:(e.status||500);
  if(status===500)console.error(JSON.stringify({event:'request_failed',path:new URL(request.url).pathname,type:e.name}));
  const message=limited?'Cloudflare 今日免費資料庫額度已用完，台灣時間上午 08:00 重置後可重試。':status===500?'服務暫時無法完成操作':e.message;
- const headers=limited?{'Retry-After':String(86400-now()%86400)}:{};
+ const headers=limited?{'Retry-After':String(86400-now()%86400)}:e.retryAfter?{'Retry-After':String(e.retryAfter)}:{};
  if(['/auth','/auth/callback'].includes(new URL(request.url).pathname)){
    response=new Response(authErrorPage(status,message,env.FRONTEND_URL||new URL('/',request.url).href),{status,headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
    }else response=json({error:message,...(['DRIVE_RECONNECT_REQUIRED','DRIVE_CONFIGURATION_ERROR'].includes(e.code)?{code:e.code}:{})},{status,headers});
