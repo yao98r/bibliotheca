@@ -45,6 +45,7 @@ for(const name of ['index','files','go','viewer','access','download']) {
  for(const match of html.matchAll(/<script(\s[^>]*)?>([\s\S]*?)<\/script>/g))new vm.Script(match[1]?.includes('module')?'(async()=>{'+match[2]+'})':match[2],{filename:name+'.html'});
  await writeFile(`${output}/${name}.html`,html);
 }
+await cp('public/enhance.html',output+'/enhance.html');
 if(!github){
  const manage=await readFile('public/manage.html','utf8');for(const match of manage.matchAll(/<script>([\s\S]*?)<\/script>/g))new vm.Script(match[1],{filename:'manage.html'});
  await writeFile(output+'/manage.html',manage.replace('</head>',pwaHead+'</head>'));

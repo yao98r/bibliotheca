@@ -1,4 +1,5 @@
 import {enhancementService,signEnhancementJob,readEnhancementJob,enhancementRequest} from './enhancement.mjs';
+import {createPortalGrant,verifyPortalGrant} from './portal.mjs';
 import {fail,now,iso,random,hash,day,isDownload,validAction,scopeAllows,permission,validateProfile,traceCode,unb64,ranks} from './core.mjs';
 import {one,run,rows,setting,setSetting,session,jsonBody,csrf,beginAuth,callback,exchange,driveToken} from './auth.mjs';
 import {syncStep,assetFor,verifyAsset,indexFor,singlePage,fullFile,watermarkedFullFile} from './drive.mjs';
@@ -56,6 +57,10 @@ async function handle(request,env,ctx){
  if(p==='/auth'&&method==='GET')return beginAuth(request,env);
  if(p==='/auth/callback'&&method==='GET')return callback(request,env);
  if(p==='/api/exchange'&&method==='POST')return exchange(request,env);
+ if(p==='/api/enhance/portal/verify'&&method==='POST'){
+  const service=enhancementService(env);if(!service||request.headers.get('X-Tianhe-Service-Key')!==service.apiKey)fail(403,'服務授權無效');
+  const body=await jsonBody(request,4096);return json(await verifyPortalGrant(env,body.token,body.audience));
+ }
  if(!p.startsWith('/api/')&&p!=='/file'){
    if(!['GET','HEAD'].includes(method))fail(405,'方法不支援');
    const aliases={'/go':'/go.html','/files':'/files.html','/access':'/access.html','/viewer':'/viewer.html'};
@@ -72,6 +77,7 @@ async function handle(request,env,ctx){
  if(body)csrf(request,body,u,env);
  if(p==='/api/me'&&method==='GET')return json({email:u.email,name:u.display_name||u.google_name,...(u.admin?{level:u.level,ranks}:{}),admin:u.admin,csrf:u.csrf,canView:!!u.view_enabled,canDownload:u.download_mode==='download',canEnhance,readingMode:u.reading_mode,dailyLimit:u.daily_download_limit,downloadsToday:(await one(env,'SELECT COUNT(*) n FROM downloads WHERE email=? AND day=?',u.email,day())).n});
  if(p==='/api/enhance/config'&&method==='GET')return json({enabled:!!enhancementService(env)&&u.download_mode==='download'&&canEnhance,maxBytes:20*1024*1024,name:'天河增強系統'});
+ if(p==='/api/enhance/portal'&&body)return json(await createPortalGrant(env,u,body.audience));
  if(p==='/api/enhance/start'&&body){
   if(!enhancementService(env))fail(503,'天河增強系統正在準備中，請先下載原始畫質。');
   const {t,a}=await ticket(env,u,body.ticket);if(t.kind!=='download')fail(403,'請從下載入口使用畫質增強');can(u,t.action);
