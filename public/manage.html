@@ -2,7 +2,7 @@
 <style>body{max-width:820px;margin:8vh auto;padding:24px;background:#f1e4cd;color:#302820;font:16px/1.8 system-ui}a{color:#9b472f}h1{font-family:Georgia,serif;font-weight:400}section{border-top:1px solid #ccb99a;padding:20px 0}button{padding:12px 18px;background:#9b472f;color:white;border:0;border-radius:4px;cursor:pointer;margin:6px}button:disabled{opacity:.5}#status{white-space:pre-wrap}code{overflow-wrap:anywhere}</style>
 <a href="/">← 回到書庫</a><h1>書庫連線管理</h1><p>僅管理者可以連接 Drive 及同步書目。</p><p id="status" role="status">正在確認登入…</p>
 <main hidden><section><h2>Google Drive</h2><p id="connection"></p><button id="connect">連接／重新授權 Google Drive</button><p>請使用 yaochen452@gmail.com。只會讀取書庫檔案，不會修改或刪除 Drive 原檔。</p></section>
-<section><h2>同步書目與 PDF</h2><p>將新 PDF 放進參考書或模擬考書庫，再按下同步。系統會掃描書目、自動建立閱讀索引，完成後即可依帳號權限閱讀與下載。</p><p>請保持本頁開啟直到顯示完成；大型 PDF 需要較長時間。若關閉或暫停，重新按同步可接續已完成的頁面。</p><button id="sync">同步書目並建立索引</button><button id="stop" disabled>暫停</button><progress id="progress" hidden></progress><p id="detail" role="status"></p><ul id="errors"></ul></section>
+<section><h2>同步書目與 PDF</h2><p>更新 PDF 後按下同步，系統會建立與新版內容相符的閱讀索引，完成後即可依帳號權限閱讀與下載。</p><label><input type="checkbox" id="preserve" checked> 保留原目錄：只更新已登錄 PDF，保留書名、分類、排序及題本／答案對應。</label><p>新增書籍或同步資料夾位置變動時，才取消勾選以進行完整書目同步。</p><p>請保持本頁開啟直到顯示完成；大型 PDF 需要較長時間。若關閉或暫停，重新按同步可接續已完成的頁面，並沿用同一個目錄選項。</p><button id="sync">同步 PDF 並建立索引</button><button id="stop" disabled>暫停</button><progress id="progress" hidden></progress><p id="detail" role="status"></p><ul id="errors"></ul></section>
 <section><h2>整本 PDF 保護</h2><p>首次準備既有 PDF，完成後由後端直接產生個人化檔案。只建立合成樣板，不會重建已完成的逐頁索引，也不會修改 Drive 原檔。</p><button id="watermarks">準備整本 PDF 保護</button><p>請保持本頁開啟；完成的檔案會自動略過，暫停後可接續。</p></section>
 <section><h2>還原原版書目分類</h2><p>依舊天眼的確切檔案 ID，修正參考書與模擬考分類。未確認的檔案保留目前分類。</p><button id="restore">依原版目錄修正分類</button><p id="restoration" role="status"></p></section>
 <section><h2>支援的 PDF</h2><p>支援未加密、單檔不超過 256 MB 的 PDF。索引完整建立後才開放使用；失敗的檔案會列出原因，可修正原檔後再同步。既有書目依原版目錄分類，新檔案由檔名推定，請核對。</p></section></main>
@@ -47,10 +47,11 @@ $('#watermarks').onclick=async()=>{
  finally{running=false;$('#sync').disabled=$('#connect').disabled=$('#watermarks').disabled=false;$('#stop').disabled=true;$('#progress').hidden=true;}
 };
 $('#sync').onclick=async()=>{
- stop=false;running=true;$('#sync').disabled=$('#connect').disabled=$('#watermarks').disabled=true;$('#stop').disabled=false;$('#errors').replaceChildren();$('#detail').textContent='';let completed=0;
+ const preserveCatalog=$('#preserve').checked;
+ stop=false;running=true;$('#preserve').disabled=$('#sync').disabled=$('#connect').disabled=$('#watermarks').disabled=true;$('#stop').disabled=false;$('#errors').replaceChildren();$('#detail').textContent='';let completed=0;
  const skipped=[];
  try{
-  do{const d=await api('/api/drive/sync',{});$('#status').textContent='正在掃描書目；尚有 '+d.remaining+' 個資料夾／分頁。';if(!d.remaining)break;}while(!stop);
+  do{const d=await api('/api/drive/sync',{preserveCatalog});$('#status').textContent=(preserveCatalog?'正在更新既有 PDF；':'正在掃描書目；')+'尚有 '+d.remaining+' 個資料夾／分頁。';if(!d.remaining)break;}while(!stop);
   while(!stop){
    const d=await api('/api/index/next',{skip:skipped});if(!d.job)break;
    $('#status').textContent='正在準備新 PDF；尚有 '+d.remaining+' 份待處理，本次已完成 '+completed+' 份。';
@@ -65,7 +66,7 @@ $('#sync').onclick=async()=>{
   const protectedResult=!stop?await protect():{skipped:0};
   await refresh();$('#status').textContent=stop?'已暫停；下次按同步即可接續。':(skipped.length+protectedResult.skipped)?'已完成可處理的檔案；'+(skipped.length+protectedResult.skipped)+' 份需要處理下方問題後重試。':'同步完成，所有 PDF 已備妥閱讀索引與整本保護。';
  }catch(e){$('#status').textContent=e.message+'；修正後可再按同步接續。';}
- finally{running=false;$('#sync').disabled=$('#connect').disabled=$('#watermarks').disabled=false;$('#stop').disabled=true;$('#progress').hidden=true;$('#detail').textContent='本次完成 '+completed+' 份新 PDF。';}
+ finally{running=false;$('#preserve').disabled=$('#sync').disabled=$('#connect').disabled=$('#watermarks').disabled=false;$('#stop').disabled=true;$('#progress').hidden=true;$('#detail').textContent='本次完成 '+completed+' 份 PDF。';}
 };
 $('#stop').onclick=()=>{stop=true;$('#stop').disabled=true;cancelWork?.();};
 addEventListener('beforeunload',event=>{if(running){event.preventDefault();event.returnValue='';}});

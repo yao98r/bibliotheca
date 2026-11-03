@@ -1,7 +1,8 @@
 import {fail,hash,iso,bounded,unb64} from './core.mjs';
 import {one,rows,run,driveToken} from './auth.mjs';
-import {drive,verifyAsset} from './drive.mjs';
-const MAX_SOURCE=256*1024*1024;
+import {drive,verifyAsset,adminPdfSource} from './drive.mjs';
+// Source is streamed to the administrator; PDF parsing runs in the CLI.
+const MAX_SOURCE=512*1024*1024;
 // Bound values can exceed the 100 KB SQL-text limit. Each row remains well
 // below D1's 2 MB row limit; readers already join variable-sized parts.
 const PAGE_PART_CHARS=256000;
@@ -22,12 +23,9 @@ async function currentJob(env,id){
  if(!asset||asset.size!==job.size||asset.md5!==job.md5)fail(409,'PDF 已變更，請重新同步書目');
  return {job,asset};
 }
-export async function indexSource(env,id){
- const {asset}=await currentJob(env,id);if(asset.size>MAX_SOURCE)fail(413,'PDF 超過 256 MB，請先分冊再同步');
- const token=await driveToken(env);await verifyAsset(env,asset,token);
- const response=await drive(env,`files/${asset.id}?alt=media`,token);
- if(response.status!==200){await response.body?.cancel();fail(502,'無法取得完整 PDF');}
- return new Response(response.body,{headers:{'Content-Type':'application/pdf','X-PDF-Bytes':String(asset.size)}});
+export async function indexSource(env,id,range){
+ const {asset}=await currentJob(env,id);if(asset.size>MAX_SOURCE)fail(413,'PDF 超過 512 MiB，請先分冊再同步');
+ return adminPdfSource(env,asset,range);
 }
 export async function startIndex(env,body){
  const {job}=await currentJob(env,body.job),h=body.header;

@@ -1,6 +1,7 @@
 import {fail,bounded,unb64,replaceTrace} from './core.mjs';
 import {driveToken,one,run,rows} from './auth.mjs';
 import {appendPdfTail} from './pdf-stream.mjs';
+import {personalizeIndexedPage} from './page-watermark.mjs';
 import {restoredCategory} from './catalog.mjs';
 import {loadWatermarkTemplate,watermarkProof,personalizeWatermark,composeWatermarkedPdf,composeNativeWatermarkedPdf} from './backend-watermark.mjs';
 const FOLDER='application/vnd.google-apps.folder';
@@ -9,7 +10,22 @@ export async function drive(env,path,token,headers={}){
  const r=await fetch('https://www.googleapis.com/drive/v3/'+path,{headers:{Authorization:'Bearer '+token,...headers}});
  if(!r.ok)fail(r.status===404?404:502,r.status===404?'Drive 找不到這個檔案':'Drive 暫時無法讀取，請稍後再試');return r;
 }
-export async function syncStep(env){
+// Administrative CLI reads can resume a bounded source range after a network
+// interruption. The caller has already enforced administrator authorization.
+export async function adminPdfSource(env,asset,range){
+ let start,end;
+ if(range){
+  const match=range.match(/^bytes=(\d+)-(\d+)$/);if(!match)fail(416,'來源區段格式無效');
+  start=Number(match[1]);end=Number(match[2]);
+  if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start<0||end<start||end>=asset.size||end-start+1>32*1024*1024)fail(416,'來源區段超出範圍或超過 32 MiB');
+ }
+ const token=await driveToken(env);await verifyAsset(env,asset,token);
+ const response=await drive(env,`files/${asset.id}?alt=media`,token,range?{Range:range}:{});
+ const expected=range?`bytes ${start}-${end}/${asset.size}`:null;
+ if(response.status!==(range?206:200)||(range&&response.headers.get('Content-Range')!==expected)){await response.body?.cancel();fail(502,'無法取得正確 PDF 來源區段');}
+ return new Response(response.body,{status:range?206:200,headers:{'Content-Type':'application/pdf','X-PDF-Bytes':String(asset.size),...(range?{'Content-Range':expected,'Content-Length':String(end-start+1)}:{})}});
+}
+export async function syncStep(env,{preserveCatalog=false}={}){
  const token=await driveToken(env);
  let task=await one(env,'SELECT * FROM scan ORDER BY id LIMIT 1');
  if(!task){
@@ -20,8 +36,23 @@ export async function syncStep(env){
  // Bound each scan step; persist changed metadata and queue progress atomically.
  const q=new URLSearchParams({q:`'${task.id}' in parents and trashed = false`,pageSize:'10',fields:'nextPageToken,files(id,name,mimeType,size,md5Checksum)',...(task.page_token?{pageToken:task.page_token}:{})});
  const data=await (await drive(env,'files?'+q,token)).json(),statements=[];
+ const files=data.files||[];
+ // A file replacement must not rewrite the registered book or asset identity.
+ // Restrict this mode to assets already registered at the scanned parent.
+ const registered=preserveCatalog&&files.length?new Map((await rows(env,
+   `SELECT id,parent,book_id,mime FROM assets WHERE id IN (${files.map(()=>'?').join(',')})`,
+   ...files.map(f=>f.id))).map(a=>[a.id,a])):null;
  for(const f of data.files||[]){
    if(![FOLDER,'application/pdf'].includes(f.mimeType))continue;
+   if(preserveCatalog){
+     const existing=registered?.get(f.id);
+     if(!existing||existing.parent!==task.id||existing.mime!==f.mimeType)continue;
+     if(f.mimeType==='application/pdf')statements.push(env.DB.prepare(
+       'UPDATE assets SET size=?,md5=? WHERE id=? AND parent=? AND mime=? AND (size IS NOT ? OR md5 IS NOT ?)'
+     ).bind(Number(f.size)||0,f.md5Checksum||null,f.id,task.id,f.mimeType,Number(f.size)||0,f.md5Checksum||null));
+     else statements.push(env.DB.prepare('INSERT OR IGNORE INTO scan VALUES (?,?,?,NULL)').bind(f.id,task.category,existing.book_id));
+     continue;
+   }
    const bookId=task.book_id||f.id;
    if(!task.book_id){
      const title=f.name.replace(/\.pdf$/i,''),book={id:bookId,title,category:restoredCategory(f.id,task.category),subject:title.match(/數學[AB甲乙]?|國文|英文|物理|化學|生物|地理|歷史|公民|自然|社會/)?.[0]||'',publisher:title.match(/[\[［【]([^\]］】]+)[\]］】]/)?.[1]||'',year:title.match(/\d{3}(?=年)/)?.[0]||'',series:'',referenceKind:task.category==='參考書'?(title.includes('歷屆')?'歷屆學測彙編':title.includes('模擬')?'成冊模擬題本':'學習講義'):'',folder:f.mimeType===FOLDER,hasAnswer:false};
@@ -72,7 +103,7 @@ export async function indexFor(env,asset,token){
  if(index.asset!==asset.id||index.size!==asset.size||index.md5!==asset.md5||!Array.isArray(index.pages))fail(409,'閱覽索引與原檔不符，請重建索引');
  return index;
 }
-export async function singlePage(env,asset,index,page,code,token){
+export async function singlePage(env,asset,index,page,code,token,onWatermark=()=>{}){
  let entry;
  if(index.imported){
    const parts=await rows(env,'SELECT data FROM pdf_pages WHERE asset=? AND page=? ORDER BY part',index.indexAsset||asset.id,page);
@@ -94,6 +125,8 @@ export async function singlePage(env,asset,index,page,code,token){
    total+=bytes.length;if(total>16*1024*1024)fail(413,'頁面過大');chunks.push(bytes);
  }
  if(total!==entry.length)fail(409,'頁面索引長度不符');
+ const stamped=personalizeIndexedPage(entry,chunks,code);
+ if(stamped){onWatermark();return new Blob([stamped],{type:'application/pdf'}).stream();}
  return new Blob(chunks,{type:'application/pdf'}).stream();
 }
 export async function fullFile(env,asset,index,code,token){

@@ -1,6 +1,6 @@
 import {fail,hash,iso} from './core.mjs';
 import {one,rows,driveToken} from './auth.mjs';
-import {drive,verifyAsset} from './drive.mjs';
+import {drive,verifyAsset,adminPdfSource} from './drive.mjs';
 import {decodeWatermarkTemplate} from './backend-watermark.mjs';
 export const TEMPLATE_STORAGE_BUDGET=100*1024*1024;
 export async function watermarkRow(env,asset,content=false){
@@ -15,13 +15,10 @@ export async function nextWatermark(env,skip=[]){
 async function currentAsset(env,id){
  if(typeof id!=='string'||!/^[-\w]{10,200}$/.test(id))fail(400,'PDF 檔案代碼無效');
  const asset=await one(env,"SELECT * FROM assets WHERE id=? AND mime='application/pdf'",id);
- if(!asset)fail(404,'找不到 PDF');if(asset.size>256*1024*1024)fail(413,'PDF 超過 256 MiB，請先分冊');return asset;
+ if(!asset)fail(404,'找不到 PDF');if(asset.size>512*1024*1024)fail(413,'PDF 超過 512 MiB，請先分冊');return asset;
 }
-export async function watermarkSource(env,id){
- const asset=await currentAsset(env,id),token=await driveToken(env);await verifyAsset(env,asset,token);
- const response=await drive(env,`files/${asset.id}?alt=media`,token);
- if(response.status!==200){await response.body?.cancel();fail(502,'無法取得 PDF');}
- return new Response(response.body,{headers:{'Content-Type':'application/pdf','X-PDF-Bytes':String(asset.size)}});
+export async function watermarkSource(env,id,range){
+ return adminPdfSource(env,await currentAsset(env,id),range);
 }
 export async function storeWatermark(env,body,budgetBytes=TEMPLATE_STORAGE_BUDGET){
  const asset=await currentAsset(env,body.asset),decoded=await decodeWatermarkTemplate(body.data,asset);

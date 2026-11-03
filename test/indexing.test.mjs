@@ -51,6 +51,26 @@ before(async()=>{
  };
 });
 after(async()=>{globalThis.fetch=originalFetch;await mf?.dispose();});
+test('administrator source streaming accepts 300 MiB and rejects more than 512 MiB',async()=>{
+ const id='large-pdf-cli-fixture',jobId='auto_'+'A'.repeat(43),size=300*1024*1024,md5='0'.repeat(32),savedFetch=globalThis.fetch;
+ await env.DB.prepare('INSERT INTO assets(id,parent,book_id,name,mime,size,md5) VALUES (?,?,?,?,?,?,?)').bind(id,env.REFERENCE_ROOT_ID,asset,'Large.pdf','application/pdf',size,md5).run();
+ await env.DB.prepare('INSERT INTO index_jobs(id,asset,size,md5,updated_at) VALUES (?,?,?,?,?)').bind(jobId,id,size,md5,new Date().toISOString()).run();
+ globalThis.fetch=async(input,options)=>{
+  const url=new URL(input);
+  if(url.pathname==='/drive/v3/files/'+id)return url.searchParams.get('alt')==='media'?new Response('stream-fixture'):Response.json({size,md5Checksum:md5,parents:[env.REFERENCE_ROOT_ID]});
+  return savedFetch(input,options);
+ };
+ try{
+  for(const path of ['/api/index/source?job='+jobId,'/api/watermark/source?asset='+id]){const response=await call(path);assert.equal(response.status,200);assert.equal(response.headers.get('X-PDF-Bytes'),String(size));assert.equal(await response.text(),'stream-fixture');}
+  await env.DB.prepare('UPDATE assets SET size=? WHERE id=?').bind(512*1024*1024+1,id).run();
+  await env.DB.prepare('UPDATE index_jobs SET size=? WHERE id=?').bind(512*1024*1024+1,jobId).run();
+  for(const path of ['/api/index/source?job='+jobId,'/api/watermark/source?asset='+id])assert.equal((await call(path)).status,413);
+ }finally{
+  globalThis.fetch=savedFetch;
+  await env.DB.prepare('DELETE FROM index_jobs WHERE id=?').bind(jobId).run();
+  await env.DB.prepare('DELETE FROM assets WHERE id=?').bind(id).run();
+ }
+});
 test('browser builder reconstructs individual pages and a valid traced full PDF',async()=>{
  assert.equal(builder.header.pageCount,2);
  for(let n=1;n<=2;n++){
@@ -64,6 +84,15 @@ test('browser builder reconstructs individual pages and a valid traced full PDF'
  const loading=getDocument({data:new Uint8Array(Buffer.concat([source,Buffer.from(builder.header.tail,'base64')])),useSystemFonts:true});
  try{const parsed=await loading.promise;assert.equal(parsed.numPages,2);assert.ok((await (await parsed.getPage(2)).getTextContent()).items.some(item=>item.str.includes('PAGE-2')));}finally{await loading.destroy();}
  await assert.rejects(preparePdf(source,{size:source.length,md5:'wrong'},{PDFLib,SparkMD5}),/校驗/);
+});
+test('administrator CLI source ranges return exact bytes and reject invalid ranges',async()=>{
+ for(const base of ['/api/index/source?job='+job,'/api/watermark/source?asset='+asset]){
+  // The index fixture job is populated by the queue test below; watermark
+  // source covers the common source implementation independently here.
+  if(base.startsWith('/api/index/')&&!job)continue;
+  const req=request(base,owner);req.headers.set('Range','bytes=0-7');const r=await worker.fetch(req,env,{});assert.equal(r.status,206);assert.equal(r.headers.get('Content-Range'),`bytes 0-7/${source.length}`);assert.deepEqual(new Uint8Array(await r.arrayBuffer()),source.subarray(0,8));
+  for(const range of ['bytes=0-','bytes=0-33554432','bytes=8-7','bytes=0-'+source.length]){const bad=request(base,owner);bad.headers.set('Range',range);assert.equal((await worker.fetch(bad,env,{})).status,416);}
+ }
 });
 test('readers cannot obtain raw indexing sources or upload indexes',async()=>{
  for(const path of ['/api/watermark/next','/api/watermark/store','/api/index/next','/api/index/start','/api/index/page','/api/index/pages','/api/index/finish'])assert.equal((await call(path,{},reader)).status,403);

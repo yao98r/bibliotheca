@@ -1,3 +1,4 @@
+import {BARCODE_PLACEHOLDER,CODE_PLACEHOLDER} from './pdf-watermark-format.mjs';
 const encoder=new TextEncoder();
 export const MAX_PDF_BYTES=256*1024*1024;
 export function base64(bytes){let s='';for(let i=0;i<bytes.length;i+=8192)s+=String.fromCharCode(...bytes.subarray(i,i+8192));return btoa(s);}
@@ -24,7 +25,7 @@ export function streamLocator(source,SparkMD5){
   if(!usedOffsets)cache.set(signature,offset);return offset;
  };
 }
-export async function preparePdf(source,expected,{PDFLib,SparkMD5}){
+export async function preparePdf(source,expected,{PDFLib,SparkMD5,pageWatermark=false}){
  if(source.length!==expected.size)throw Error('PDF 傳輸不完整，請重新同步。');
  if(source.length>MAX_PDF_BYTES)throw Error('PDF 超過 256 MB，請先分冊再同步。');
  const md5=SparkMD5.ArrayBuffer.hash(source.buffer.slice(source.byteOffset,source.byteOffset+source.byteLength));
@@ -56,6 +57,21 @@ export async function preparePdf(source,expected,{PDFLib,SparkMD5}){
   const allowed=new Set(['Type','Parent','Resources','MediaBox','CropBox','BleedBox','TrimBox','ArtBox','Rotate','UserUnit','Contents','Group']);
   for(const name of doc.getPage(n-1).node.keys())if(!allowed.has(name.decodeText()))doc.getPage(n-1).node.delete(name);
   const [page]=await single.copyPages(doc,[n-1]);single.addPage(page);
+  if(pageWatermark){
+   const name=PDFName.of,crop=page.getCropBox(),rotation=((page.getRotation().angle%360)+360)%360;
+   if(![0,90,180,270].includes(rotation))throw Error('不支援的 PDF 旋轉角度');
+   const resources=page.node.Resources()?.clone(single.context)||single.context.obj({});
+   const existing=resources.lookupMaybe(name('XObject'),PDFLib.PDFDict),objects=existing?existing.clone(single.context):single.context.obj({});
+   let key='BibliothecaPageEdge';while(objects.has(name(key)))key+='_';
+   const form=single.context.register(single.context.stream(BARCODE_PLACEHOLDER,{Type:'XObject',Subtype:'Form',BBox:[0,0,1.3,61.25],Resources:{}}));
+   objects.set(name(key),form);resources.set(name('XObject'),objects);page.node.set(name('Resources'),resources);
+   const height=rotation%180?crop.width:crop.height,start=Math.max(4,Math.min(height-65.25,height*.38-30.625));
+   const matrix=rotation===0?[1,0,0,1,crop.x+crop.width-2.5,crop.y+start]:rotation===90?[0,1,1,0,crop.x+start,crop.y+crop.height-2.5]:rotation===180?[1,0,0,-1,crop.x+1.2,crop.y+crop.height-start]:[0,1,-1,0,crop.x+crop.width-start,crop.y+1.2];
+   const before=single.context.register(single.context.stream('q\n')),after=single.context.register(single.context.stream(`Q\nq\n${matrix.map(v=>Number(v.toFixed(4))).join(' ')} cm\n/${key} Do\nQ\n`));
+   const old=page.node.get(name('Contents')),resolved=single.context.lookup(old),contents=resolved instanceof PDFLib.PDFArray?resolved.asArray():old?[old]:[];
+   page.node.set(name('Contents'),single.context.obj([before,...contents,after]));
+   page.node.set(name('BibliothecaTrace'),PDFString.of(CODE_PLACEHOLDER));
+  }
   single.context.trailerInfo.Info=single.context.register(single.context.obj({BibliothecaTrace:PDFString.of('ZZZZ\\055ZZZZ')}));
   const spans=[];
   for(const [,object] of single.context.enumerateIndirectObjects()){
@@ -70,7 +86,14 @@ export async function preparePdf(source,expected,{PDFLib,SparkMD5}){
   const parts=[];let cursor=0;
   for(const span of selected){if(span.from<cursor)continue;if(!sameBytes(source,span.offset,bytes.subarray(span.from,span.to)))throw Error('PDF 頁面區段驗證失敗');if(span.from>cursor)parts.push(base64(bytes.subarray(cursor,span.from)));parts.push([span.offset,span.to-span.from]);cursor=span.to;}
   if(cursor<bytes.length)parts.push(base64(bytes.subarray(cursor)));
-  const entry={length:bytes.length,parts};if(encoder.encode(JSON.stringify(entry)).length>2*1024*1024||parts.length>80)throw Error('此頁結構過於複雜，請重新匯出或壓縮 PDF。');
+  const entry={length:bytes.length,parts};
+  if(pageWatermark){
+   const text=new TextDecoder('latin1').decode(bytes),codes=[];let at=-1;
+   while((at=text.indexOf('/BibliothecaTrace (ZZZZ-ZZZZ)',at+1))>=0)codes.push(at+'/BibliothecaTrace ('.length);
+   const barcode=text.indexOf(BARCODE_PLACEHOLDER);if(!codes.length||barcode<0||text.indexOf(BARCODE_PLACEHOLDER,barcode+1)>=0)throw Error('頁面保護預留位置不唯一');
+   entry.watermark={version:2,codes,barcode};
+  }
+  if(encoder.encode(JSON.stringify(entry)).length>2*1024*1024||parts.length>80)throw Error('此頁結構過於複雜，請重新匯出或壓縮 PDF。');
   return entry;
  }};
 }

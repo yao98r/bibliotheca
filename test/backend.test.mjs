@@ -10,6 +10,7 @@ import {singlePage,fullFile,indexFor} from '../src/drive.mjs';
 import {loginReturn} from '../src/origins.mjs';
 import {authErrorPage} from '../src/auth-error.mjs';
 import restored from '../src/restored-catalog.mjs';
+import {signEnhancementJob} from '../src/enhancement.mjs';
 let mf,env,ownerToken,userToken;
 before(async()=>{
  mf=new Miniflare({modules:true,script:'export default {fetch(){return new Response("ok")}}',compatibilityDate:'2026-07-01',d1Databases:['DB']});
@@ -26,6 +27,33 @@ before(async()=>{
 after(async()=>{await mf?.dispose();});
 const req=(path,token,body,origin='https://books.test')=>new Request('https://books.test'+path,{method:body?'POST':'GET',headers:{...(token?{Authorization:'Bearer '+token}:{}),...(body?{'Content-Type':'application/json',Origin:origin}:{})},body:body?JSON.stringify(body):undefined});
 const call=(...args)=>worker.fetch(req(...args),env,{});
+test('enhancement permission defaults to allowed, can be revoked per account and restored',async()=>{
+ assert.equal((await (await call('/api/me',userToken)).json()).canEnhance,true);
+ const profile={csrf:'test-csrf',email:'reader@example.com',action:'update',displayName:'Reader',level:'E',scope:'both',downloadMode:'download',viewEnabled:true,readingMode:'protected',dailyLimit:null,canEnhance:false};
+ assert.equal((await call('/api/allowlist',ownerToken,profile)).status,200);
+ assert.equal((await (await call('/api/me',userToken)).json()).canEnhance,false);
+ assert.equal((await call('/api/enhance/step',userToken,{csrf:'test-csrf',jobToken:'unused'})).status,403);
+ assert.equal((await call('/api/allowlist',ownerToken,{...profile,canEnhance:true})).status,200);
+ assert.equal((await (await call('/api/me',userToken)).json()).canEnhance,true);
+ assert.equal((await call('/api/allowlist',userToken,{...profile,canEnhance:false})).status,403);
+ await env.DB.prepare("UPDATE users SET download_mode='view' WHERE email='reader@example.com'").run();
+});
+test('enhancement endpoints require login and retain CSRF enforcement',async()=>{
+ for(const path of ['/api/enhance/config','/api/enhance/start','/api/enhance/step','/api/enhance/result','/api/enhance/file'])assert.equal((await call(path,null,path.endsWith('config')?undefined:{csrf:'test-csrf'})).status,401);
+ assert.equal((await call('/api/enhance/step',ownerToken,{csrf:'wrong',jobToken:'x'})).status,403);
+});
+test('enhancement jobs retain account and download authorization before contacting the service',async()=>{
+ const enhancedEnv={...env,TOKEN_ENCRYPTION_KEY:'test-only-key',PDF_ENHANCE_SERVICE:JSON.stringify({url:'https://tianyan-pdf-enhance-01.tsea-6580.chatgpt.site',token:'test-only-service',apiKey:'test-service-key-that-is-at-least-32-bytes'})};
+ const job=await signEnhancementJob(enhancedEnv,{email:'owner@example.com'},{job:'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',book:'ref',asset:'ref'}),previous=globalThis.fetch;let calls=0;
+ globalThis.fetch=async()=>{calls++;throw Error('Must not contact upstream');};
+ try{const response=await worker.fetch(req('/api/enhance/step',userToken,{csrf:'test-csrf',jobToken:job}),enhancedEnv,{});assert.equal(response.status,403);assert.equal(calls,0);}finally{globalThis.fetch=previous;}
+});
+test('authorized enhancement steps send the service credential only server-side',async()=>{
+ const enhancedEnv={...env,TOKEN_ENCRYPTION_KEY:'test-only-key',PDF_ENHANCE_SERVICE:JSON.stringify({url:'https://tianyan-pdf-enhance-01.tsea-6580.chatgpt.site',token:'test-only-service',apiKey:'test-service-key-that-is-at-least-32-bytes'})};
+ const job=await signEnhancementJob(enhancedEnv,{email:'owner@example.com'},{job:'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',book:'ref',asset:'ref'}),previous=globalThis.fetch;let calls=0;
+ globalThis.fetch=async(url,options)=>{calls++;assert.equal(String(url),'https://tianyan-pdf-enhance-01.tsea-6580.chatgpt.site/api/pdf/jobs/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/step');assert.equal(options.headers.get('OAI-Sites-Authorization'),'Bearer test-only-service');return Response.json({stage:'done',progress:100});};
+ try{const response=await worker.fetch(req('/api/enhance/step',ownerToken,{csrf:'test-csrf',jobToken:job}),enhancedEnv,{});assert.equal(response.status,200);assert.equal((await response.json()).stage,'done');assert.equal(calls,1);}finally{globalThis.fetch=previous;}
+});
 test('browser OAuth errors render Chinese HTML while API failures stay JSON',async()=>{
  const r=await call('/auth/callback');assert.equal(r.status,400);assert.match(r.headers.get('content-type'),/text\/html.*utf-8/);
  const html=await r.text();assert.match(html,/登入已過期/);assert.match(html,/返回書庫/);assert.doesNotMatch(html,/\{"error":/);
@@ -95,6 +123,36 @@ test('issued PDF tickets are bound to the account and recheck permission on ever
  }finally{await env.DB.prepare("UPDATE users SET access_scope='ref',view_enabled=1,blocked=0 WHERE email='reader@example.com'").run();await env.DB.prepare('DELETE FROM tickets WHERE hash=?').bind(await hash(raw)).run();}
 });
 test('owner cannot be blocked',async()=>{assert.equal((await call('/api/allowlist',ownerToken,{csrf:'test-csrf',email:'owner@example.com',action:'remove'})).status,403);});
+
+test('all delivery routes reject stolen, expired and revoked tickets before touching Drive',async()=>{
+ const paths=['/api/viewer','/api/page','/api/fast-file','/file','/api/download-context'];
+ const view=random(),download=random(),originalFetch=globalThis.fetch;let upstream=0;
+ globalThis.fetch=async()=>{upstream++;throw Error('Denied requests must not reach Drive');};
+ const before=await env.DB.prepare("SELECT * FROM users WHERE email='reader@example.com'").first();
+ try{
+  await env.DB.prepare("UPDATE users SET access_scope='both',view_enabled=1,download_mode='download',reading_mode='fast' WHERE email='reader@example.com'").run();
+  for(const [raw,action,kind] of [[view,'answer_open','view'],[download,'answer_download','download']])await env.DB.prepare('INSERT INTO tickets VALUES (?,?,?,?,?,?,?,?,NULL,?)').bind(await hash(raw),'reader@example.com','ref','ref',action,kind,kind==='view'?'ABCD-EFGH':'JKLM-NPQR',new Date().toISOString(),now()+600).run();
+  for(const path of paths){const raw=path==='/file'||path==='/api/download-context'?download:view;assert.equal((await call(path+'?ticket='+raw+'&page=1',ownerToken)).status,403);assert.equal((await call(path+'?ticket='+raw+'&page=1')).status,401);}
+  for(const raw of [view,download])await env.DB.prepare('UPDATE tickets SET expires=? WHERE hash=?').bind(now()-1,await hash(raw)).run();
+  for(const path of paths)assert.equal((await call(path+'?ticket='+(path==='/file'||path==='/api/download-context'?download:view)+'&page=1',userToken)).status,403);
+  for(const raw of [view,download])await env.DB.prepare('UPDATE tickets SET expires=? WHERE hash=?').bind(now()+600,await hash(raw)).run();
+  await env.DB.prepare("UPDATE users SET blocked=1 WHERE email='reader@example.com'").run();
+  for(const path of paths)assert.equal((await call(path+'?ticket='+(path==='/file'||path==='/api/download-context'?download:view)+'&page=1',userToken)).status,403);
+  await env.DB.prepare("UPDATE users SET blocked=0,view_enabled=0,download_mode='view' WHERE email='reader@example.com'").run();
+  for(const path of paths)assert.equal((await call(path+'?ticket='+(path==='/file'||path==='/api/download-context'?download:view)+'&page=1',userToken)).status,403);
+  assert.equal(upstream,0);
+ }finally{globalThis.fetch=originalFetch;await env.DB.prepare('UPDATE users SET access_scope=?,view_enabled=?,download_mode=?,reading_mode=?,blocked=? WHERE email=?').bind(before.access_scope,before.view_enabled,before.download_mode,before.reading_mode,before.blocked,before.email).run();for(const raw of [view,download])await env.DB.prepare('DELETE FROM tickets WHERE hash=?').bind(await hash(raw)).run();}
+});
+
+test('exhausted download quota is rejected before Google Drive is contacted',async()=>{
+ const raw=random(),original=globalThis.fetch,before=await env.DB.prepare("SELECT * FROM users WHERE email='reader@example.com'").first();let calls=0;
+ try{
+  await env.DB.prepare("UPDATE users SET access_scope='both',download_mode='download',daily_download_limit=0 WHERE email='reader@example.com'").run();
+  await env.DB.prepare('INSERT INTO tickets VALUES (?,?,?,?,?,?,?,?,NULL,?)').bind(await hash(raw),'reader@example.com','ref','ref','download_request','download','ABCD-EFGH',new Date().toISOString(),now()+600).run();
+  globalThis.fetch=async()=>{calls++;throw Error('Unexpected upstream read');};
+  assert.equal((await call('/file?ticket='+raw,userToken)).status,429);assert.equal(calls,0);
+ }finally{globalThis.fetch=original;await env.DB.prepare('UPDATE users SET access_scope=?,download_mode=?,daily_download_limit=? WHERE email=?').bind(before.access_scope,before.download_mode,before.daily_download_limit,before.email).run();await env.DB.prepare('DELETE FROM tickets WHERE hash=?').bind(await hash(raw)).run();}
+});
 test('PKCE exchange checks verifier and only succeeds once under concurrency',async()=>{
  const code=random(),state=random(),verifier='a'.repeat(64);await env.DB.prepare('INSERT INTO exchanges VALUES (?,?,?,?,?)').bind(await hash(code),'reader@example.com',state,await hash(verifier),now()+60).run();
  assert.equal((await call('/api/exchange',null,{code,state,verifier:'b'.repeat(64)})).status,401);
