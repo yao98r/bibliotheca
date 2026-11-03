@@ -62,6 +62,7 @@ await writeFile(output+'/assets/pdf.min.mjs',compatibilityImport+await readFile(
 await rm(output+'/assets/tsea-mark.png',{force:true});
 await cp('public/trace-watermark.mjs',output+'/assets/trace-watermark.mjs');
 await cp('public/pdf-render.mjs',output+'/assets/pdf-render.mjs');
+await cp('public/pdf-preview.mjs',output+'/assets/pdf-preview.mjs');
 await cp('node_modules/pdf-lib/dist/pdf-lib.esm.min.js',output+'/assets/pdf-lib.esm.min.js');
 await cp('node_modules/pdf-lib/LICENSE.md',output+'/assets/PDF-LIB-LICENSE');
 await writeFile(output+'/assets/pdf.worker.min.mjs',compatibilityImport+await readFile('node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs','utf8'));
