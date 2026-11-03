@@ -3,6 +3,7 @@ import vm from 'node:vm';
 const github=process.argv.includes('--github');
 const output=github?'dist-pages':'dist';
 const backend='https://bibliotheca-backend.bibliotheca-cloudflare.workers.dev';
+const pdfjsBuild='legacy-20261103';
 const pwaHead='<link rel="manifest" href="./manifest.webmanifest"><link rel="apple-touch-icon" href="./icons/apple-touch-icon.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="天眼書庫"><script src="./pwa.js" defer></script>';
 await mkdir(output+'/assets',{recursive:true});
 for(const name of ['index','files','go','viewer','access','download']) {
@@ -10,6 +11,10 @@ for(const name of ['index','files','go','viewer','access','download']) {
  html=html.replaceAll("const BACKEND='https://tianyan-books.yao98r.chatgpt.site';",github?`const BACKEND='${backend}';`:'const BACKEND=location.origin;')
    .replaceAll('https://tianyan-books.yao98r.chatgpt.site/assets/','./assets/')
    .replaceAll("'bibliotheca-session-v1'","'bibliotheca-cloudflare-session-v1'");
+ // Keep API and worker on the same official compatibility build. Versioned
+ // URLs bypass an older mobile browser's cached modern-only bundle.
+ html=html.replaceAll("./assets/pdf.min.mjs'",`./assets/pdf.min.mjs?build=${pdfjsBuild}'`)
+  .replaceAll("./assets/pdf.worker.min.mjs'",`./assets/pdf.worker.min.mjs?build=${pdfjsBuild}'`);
  const start=html.indexOf('async function startLogin('),end=html.indexOf('async function savePdf(',start);
  if(start<0||end<0)throw Error('Missing login boundary in '+name);
  html=html.slice(0,start)+`async function startLogin(onSuccess,onError){
@@ -51,13 +56,15 @@ if(!github){
  await cp('node_modules/pdf-lib/LICENSE.md',output+'/assets/PDF-LIB-LICENSE');
  await cp('node_modules/spark-md5/LICENSE',output+'/assets/SPARK-MD5-LICENSE');
 }
-await cp('node_modules/pdfjs-dist/build/pdf.min.mjs',output+'/assets/pdf.min.mjs');
+const compatibilityImport=`import './pdf-compat.mjs?build=${pdfjsBuild}';\n`;
+await cp('public/pdf-compat.mjs',output+'/assets/pdf-compat.mjs');
+await writeFile(output+'/assets/pdf.min.mjs',compatibilityImport+await readFile('node_modules/pdfjs-dist/legacy/build/pdf.min.mjs','utf8'));
 await rm(output+'/assets/tsea-mark.png',{force:true});
 await cp('public/trace-watermark.mjs',output+'/assets/trace-watermark.mjs');
 await cp('public/pdf-render.mjs',output+'/assets/pdf-render.mjs');
 await cp('node_modules/pdf-lib/dist/pdf-lib.esm.min.js',output+'/assets/pdf-lib.esm.min.js');
 await cp('node_modules/pdf-lib/LICENSE.md',output+'/assets/PDF-LIB-LICENSE');
-await cp('node_modules/pdfjs-dist/build/pdf.worker.min.mjs',output+'/assets/pdf.worker.min.mjs');
+await writeFile(output+'/assets/pdf.worker.min.mjs',compatibilityImport+await readFile('node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs','utf8'));
 for(const dir of ['cmaps','standard_fonts','wasm']) await cp(`node_modules/pdfjs-dist/${dir}`,`${output}/assets/${dir}`,{recursive:true});
 await cp('PDFJS-LICENSE',output+'/PDFJS-LICENSE');
 const manifest=JSON.parse(await readFile('public/manifest.webmanifest','utf8'));manifest.id=github?'/bibliotheca/':'/';
