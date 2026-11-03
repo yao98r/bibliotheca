@@ -29,7 +29,7 @@ test('service worker never stores PDF bytes, API data, OAuth callbacks or authen
  }
  for(const r of [{url:'https://other.test/bibliotheca/pwa.js',headers:new Headers()},{url:'https://books.test/bibliotheca/pwa.js',headers:new Headers({Authorization:'Bearer secret'})}]){let intercepted=false;sw.handlers.fetch({request:{...r,method:'GET'},respondWith(){intercepted=true;}});assert.equal(intercepted,false);}
  let result;sw.handlers.fetch({request:{url:'https://books.test/bibliotheca/pwa.js',method:'GET',headers:new Headers()},respondWith(p){result=p;}});assert.equal(await (await result).text(),'public');assert.deepEqual(sw.writes,['https://books.test/bibliotheca/pwa.js']);
- let activated;sw.handlers.activate({waitUntil(p){activated=p;}});await activated;assert.deepEqual(sw.deletes,['bibliotheca-shell-old']);
+ let activated;sw.handlers.activate({waitUntil(p){activated=p;}});await activated;assert.deepEqual(sw.deletes,['bibliotheca-shell-old','bibliotheca-shell-20261030-v3']);
 });
 test('offline navigation shows a public reconnect screen without caching account pages',async()=>{
  const sw=serviceWorker(async()=>{throw Error('offline');});vm.runInNewContext(await readFile('public/sw.js','utf8'),sw.sandbox);let result;
