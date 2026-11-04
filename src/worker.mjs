@@ -1,6 +1,7 @@
 import {enhancementService,signEnhancementJob,readEnhancementJob,enhancementRequest} from './enhancement.mjs';
-import {createPortalGrant,verifyPortalGrant} from './portal.mjs';
-import {fail,now,iso,random,hash,day,isDownload,validAction,scopeAllows,permission,validateProfile,traceCode,unb64,ranks} from './core.mjs';
+import {createPortalGrant,verifyPortalGrant,portalAllowed} from './portal.mjs';
+import {uploadEnhancement} from './enhancement-distributed.mjs';
+import {fail,now,iso,random,hash,day,isDownload,validAction,scopeAllows,permission,validateProfile,traceCode,unb64,ranks,bounded} from './core.mjs';
 import {one,run,rows,setting,setSetting,session,jsonBody,csrf,beginAuth,callback,exchange,driveToken} from './auth.mjs';
 import {syncStep,assetFor,verifyAsset,indexFor,singlePage,fullFile,watermarkedFullFile} from './drive.mjs';
 import {allowedOrigin} from './origins.mjs';
@@ -61,6 +62,11 @@ async function handle(request,env,ctx){
   const service=enhancementService(env);if(!service||request.headers.get('X-Tianhe-Service-Key')!==service.apiKey)fail(403,'服務授權無效');
   const body=await jsonBody(request,4096);return json(await verifyPortalGrant(env,body.token,body.audience));
  }
+ if(p==='/api/enhance/export'&&method==='POST'){
+  if(!allowedOrigin(request,env)||!request.headers.get('content-type')?.startsWith('application/x-www-form-urlencoded'))fail(403,'請從天眼下載頁操作');
+  const form=new URLSearchParams(new TextDecoder().decode(await bounded(request,32768))),headers=new Headers(request.headers);headers.set('Authorization','Bearer '+form.get('token'));const u=await session(new Request(url,{headers}),env);csrf(request,{csrf:form.get('csrf')},u,env);await portalAllowed(env,u);
+  const job=await readEnhancementJob(env,u,form.get('jobToken'));await bookFor(env,u,job.book);can(u,'download_request');await assetFor(env,job.book,job.asset);const response=await enhancementRequest(env,(job.mode==='distributed'?'distributed/jobs/':'jobs/')+job.job+'/file'),h=new Headers(response.headers);h.set('Cache-Control','no-store');h.set('X-PDF-Watermark','server-v2');if(response.headers.get('Content-Length'))h.set('X-PDF-Bytes',response.headers.get('Content-Length'));return new Response(response.body,{headers:h});
+ }
  if(!p.startsWith('/api/')&&p!=='/file'){
    if(!['GET','HEAD'].includes(method))fail(405,'方法不支援');
    const aliases={'/go':'/go.html','/files':'/files.html','/access':'/access.html','/viewer':'/viewer.html'};
@@ -76,20 +82,19 @@ async function handle(request,env,ctx){
  const body=method==='POST'?await jsonBody(request,p==='/api/index/pages'?6*1024*1024:['/api/index/page','/api/watermark/store'].includes(p)?750000:32768):null;
  if(body)csrf(request,body,u,env);
  if(p==='/api/me'&&method==='GET')return json({email:u.email,name:u.display_name||u.google_name,...(u.admin?{level:u.level,ranks}:{}),admin:u.admin,csrf:u.csrf,canView:!!u.view_enabled,canDownload:u.download_mode==='download',canEnhance,readingMode:u.reading_mode,dailyLimit:u.daily_download_limit,downloadsToday:(await one(env,'SELECT COUNT(*) n FROM downloads WHERE email=? AND day=?',u.email,day())).n});
- if(p==='/api/enhance/config'&&method==='GET')return json({enabled:!!enhancementService(env)&&u.download_mode==='download'&&canEnhance,maxBytes:20*1024*1024,name:'天河增強系統'});
+ if(p==='/api/enhance/config'&&method==='GET')return json({enabled:!!enhancementService(env)&&u.download_mode==='download'&&canEnhance,maxBytes:null,maxPages:null,parallelism:10,name:'天河增強系統'});
  if(p==='/api/enhance/portal'&&body)return json(await createPortalGrant(env,u,body.audience));
  if(p==='/api/enhance/start'&&body){
   if(!enhancementService(env))fail(503,'天河增強系統正在準備中，請先下載原始畫質。');
   const {t,a}=await ticket(env,u,body.ticket);if(t.kind!=='download')fail(403,'請從下載入口使用畫質增強');can(u,t.action);
-  if(![300,600,800].includes(body.dpi))fail(400,'畫質設定無效');if(a.size>20*1024*1024)fail(413,'這份 PDF 超過 20 MB，請下載原始畫質或先分冊。');
+  if(![300,600,800].includes(body.dpi))fail(400,'畫質設定無效');
   const original=await handle(new Request(url.origin+'/file?ticket='+encodeURIComponent(body.ticket),{headers:request.headers}),env,ctx);
-  const length=Number(original.headers.get('X-PDF-Bytes')||original.headers.get('Content-Length'));if(length>20*1024*1024){await original.body.cancel();fail(413,'這份 PDF 超過增強上限，請下載原始畫質。');}
-  const response=await enhancementRequest(env,'jobs',{method:'POST',body:original.body,headers:{'Content-Type':'application/pdf',...(length?{'Content-Length':String(length)}:{}),'X-PDF-Filename':encodeURIComponent(a.name),'X-PDF-Options':encodeURIComponent(JSON.stringify({dpi:body.dpi,removeWatermarks:body.removeWatermarks!==false,sharpen:true}))}}),state=await response.json();
-  return json({...state,jobToken:await signEnhancementJob(env,u,{job:state.id,book:t.book_id,asset:t.asset_id})});
+  const length=Number(original.headers.get('X-PDF-Bytes')||original.headers.get('Content-Length')),state=await uploadEnhancement(env,original.body,length,a.name,{dpi:body.dpi,removeWatermarks:body.removeWatermarks!==false,sharpen:true});
+  return json({...state,jobToken:await signEnhancementJob(env,u,{job:state.id,book:t.book_id,asset:t.asset_id,mode:'distributed'})});
  }
  if(['/api/enhance/step','/api/enhance/result','/api/enhance/file'].includes(p)&&body){
   const job=await readEnhancementJob(env,u,body.jobToken);await bookFor(env,u,job.book);can(u,'download_request');await assetFor(env,job.book,job.asset);
-  const action=p.slice('/api/enhance/'.length),response=await enhancementRequest(env,'jobs/'+job.job+'/'+action,{method:action==='step'?'POST':'GET'});
+  const action=p.slice('/api/enhance/'.length),response=await enhancementRequest(env,(job.mode==='distributed'?'distributed/jobs/':'jobs/')+job.job+'/'+action,{method:action==='step'?'POST':'GET'});
   if(action!=='file')return json(await response.json());
   const h=new Headers(response.headers);if(response.headers.get('Content-Length'))h.set('X-PDF-Bytes',response.headers.get('Content-Length'));else h.delete('X-PDF-Bytes');h.set('X-PDF-Watermark','server-v2');h.set('Cache-Control','no-store');return new Response(response.body,{headers:h});
  }

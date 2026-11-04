@@ -60,6 +60,12 @@ test('browser OAuth errors render Chinese HTML while API failures stay JSON',asy
  const api=await call('/api/books');assert.match(api.headers.get('content-type'),/application\/json/);
  const denial=authErrorPage(403,'尚未取得使用權限 <script>','https://yao98r.github.io/bibliotheca/');assert.match(denial,/僅開放管理者指定/);assert.match(denial,/&lt;script&gt;/);assert.doesNotMatch(denial,/<script>/);
 });
+test('native enhancement download streams through existing Tianyan login, CSRF and book authorization',async()=>{
+ const enhancedEnv={...env,TOKEN_ENCRYPTION_KEY:'test-only-key',PDF_ENHANCE_SERVICE:JSON.stringify({url:'https://tianyan-pdf-enhance-01.tsea-6580.chatgpt.site',token:'service-only',apiKey:'test-service-key-that-is-at-least-32-bytes'})},jobToken=await signEnhancementJob(enhancedEnv,{email:'owner@example.com'},{job:'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',book:'ref',asset:'ref',mode:'distributed'}),previous=globalThis.fetch;let calls=0;
+ const send=(fields={},origin='https://books.test')=>worker.fetch(new Request('https://books.test/api/enhance/export',{method:'POST',headers:{Origin:origin,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({token:ownerToken,csrf:'test-csrf',jobToken,...fields})}),enhancedEnv,{});
+ globalThis.fetch=async(url,options)=>{calls++;assert.match(String(url),/\/api\/pdf\/distributed\/jobs\/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\/file$/);assert.equal(options.headers.get('X-Tianhe-Service-Key'),'test-service-key-that-is-at-least-32-bytes');return new Response('%PDF-test',{headers:{'Content-Type':'application/pdf','Content-Length':'9','Content-Disposition':'attachment; filename="enhanced.pdf"'}});};
+ try{const response=await send();assert.equal(response.status,200);assert.equal(await response.text(),'%PDF-test');assert.equal(calls,1);assert.equal((await send({csrf:'wrong'})).status,403);assert.equal((await send({},'https://evil.test')).status,403);assert.equal((await send({token:'bad'})).status,401);assert.equal((await send({token:userToken})).status,403);assert.equal(calls,1);}finally{globalThis.fetch=previous;}
+});
 test('source connection checks are owner-only and validate live Drive access without modifying readers',async()=>{
  assert.equal((await call('/api/drive/check',userToken,{csrf:'test-csrf'})).status,403);
  const before=await env.DB.prepare("SELECT * FROM users WHERE email='reader@example.com'").first();
