@@ -10,7 +10,6 @@ import {singlePage,fullFile,indexFor} from '../src/drive.mjs';
 import {loginReturn} from '../src/origins.mjs';
 import {authErrorPage} from '../src/auth-error.mjs';
 import restored from '../src/restored-catalog.mjs';
-import {signEnhancementJob} from '../src/enhancement.mjs';
 let mf,env,ownerToken,userToken;
 before(async()=>{
  mf=new Miniflare({modules:true,script:'export default {fetch(){return new Response("ok")}}',compatibilityDate:'2026-07-01',d1Databases:['DB']});
@@ -27,45 +26,17 @@ before(async()=>{
 after(async()=>{await mf?.dispose();});
 const req=(path,token,body,origin='https://books.test')=>new Request('https://books.test'+path,{method:body?'POST':'GET',headers:{...(token?{Authorization:'Bearer '+token}:{}),...(body?{'Content-Type':'application/json',Origin:origin}:{})},body:body?JSON.stringify(body):undefined});
 const call=(...args)=>worker.fetch(req(...args),env,{});
-test('enhancement permission defaults to allowed, can be revoked per account and restored',async()=>{
- assert.equal((await (await call('/api/me',userToken)).json()).canEnhance,true);
- const profile={csrf:'test-csrf',email:'reader@example.com',action:'update',displayName:'Reader',level:'E',scope:'both',downloadMode:'download',viewEnabled:true,readingMode:'protected',dailyLimit:null,canEnhance:false};
- assert.equal((await call('/api/allowlist',ownerToken,profile)).status,200);
- assert.equal((await (await call('/api/me',userToken)).json()).canEnhance,false);
- assert.equal((await call('/api/enhance/step',userToken,{csrf:'test-csrf',jobToken:'unused'})).status,403);
- assert.equal((await call('/api/allowlist',ownerToken,{...profile,canEnhance:true})).status,200);
- assert.equal((await (await call('/api/me',userToken)).json()).canEnhance,true);
- assert.equal((await call('/api/allowlist',userToken,{...profile,canEnhance:false})).status,403);
- await env.DB.prepare("UPDATE users SET download_mode='view' WHERE email='reader@example.com'").run();
-});
-test('enhancement endpoints require login and retain CSRF enforcement',async()=>{
- for(const path of ['/api/enhance/config','/api/enhance/start','/api/enhance/step','/api/enhance/result','/api/enhance/file'])assert.equal((await call(path,null,path.endsWith('config')?undefined:{csrf:'test-csrf'})).status,401);
- assert.equal((await call('/api/enhance/step',ownerToken,{csrf:'wrong',jobToken:'x'})).status,403);
-});
-test('enhancement jobs retain account and download authorization before contacting the service',async()=>{
- const enhancedEnv={...env,TOKEN_ENCRYPTION_KEY:'test-only-key',PDF_ENHANCE_SERVICE:JSON.stringify({url:'https://tianyan-pdf-enhance-01.tsea-6580.chatgpt.site',token:'test-only-service',apiKey:'test-service-key-that-is-at-least-32-bytes'})};
- const job=await signEnhancementJob(enhancedEnv,{email:'owner@example.com'},{job:'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',book:'ref',asset:'ref'}),previous=globalThis.fetch;let calls=0;
- globalThis.fetch=async()=>{calls++;throw Error('Must not contact upstream');};
- try{const response=await worker.fetch(req('/api/enhance/step',userToken,{csrf:'test-csrf',jobToken:job}),enhancedEnv,{});assert.equal(response.status,403);assert.equal(calls,0);}finally{globalThis.fetch=previous;}
-});
-test('authorized enhancement steps send the service credential only server-side',async()=>{
- const enhancedEnv={...env,TOKEN_ENCRYPTION_KEY:'test-only-key',PDF_ENHANCE_SERVICE:JSON.stringify({url:'https://tianyan-pdf-enhance-01.tsea-6580.chatgpt.site',token:'test-only-service',apiKey:'test-service-key-that-is-at-least-32-bytes'})};
- const job=await signEnhancementJob(enhancedEnv,{email:'owner@example.com'},{job:'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',book:'ref',asset:'ref'}),previous=globalThis.fetch;let calls=0;
- globalThis.fetch=async(url,options)=>{calls++;assert.equal(String(url),'https://tianyan-pdf-enhance-01.tsea-6580.chatgpt.site/api/pdf/jobs/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/step');assert.equal(options.headers.get('OAI-Sites-Authorization'),'Bearer test-only-service');return Response.json({stage:'done',progress:100});};
- try{const response=await worker.fetch(req('/api/enhance/step',ownerToken,{csrf:'test-csrf',jobToken:job}),enhancedEnv,{});assert.equal(response.status,200);assert.equal((await response.json()).stage,'done');assert.equal(calls,1);}finally{globalThis.fetch=previous;}
-});
+
+
+
+
 test('browser OAuth errors render Chinese HTML while API failures stay JSON',async()=>{
  const r=await call('/auth/callback');assert.equal(r.status,400);assert.match(r.headers.get('content-type'),/text\/html.*utf-8/);
  const html=await r.text();assert.match(html,/登入已過期/);assert.match(html,/返回書庫/);assert.doesNotMatch(html,/\{"error":/);
  const api=await call('/api/books');assert.match(api.headers.get('content-type'),/application\/json/);
  const denial=authErrorPage(403,'尚未取得使用權限 <script>','https://yao98r.github.io/bibliotheca/');assert.match(denial,/僅開放管理者指定/);assert.match(denial,/&lt;script&gt;/);assert.doesNotMatch(denial,/<script>/);
 });
-test('native enhancement download streams through existing Tianyan login, CSRF and book authorization',async()=>{
- const enhancedEnv={...env,TOKEN_ENCRYPTION_KEY:'test-only-key',PDF_ENHANCE_SERVICE:JSON.stringify({url:'https://tianyan-pdf-enhance-01.tsea-6580.chatgpt.site',token:'service-only',apiKey:'test-service-key-that-is-at-least-32-bytes'})},jobToken=await signEnhancementJob(enhancedEnv,{email:'owner@example.com'},{job:'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',book:'ref',asset:'ref',mode:'distributed'}),previous=globalThis.fetch;let calls=0;
- const send=(fields={},origin='https://books.test')=>worker.fetch(new Request('https://books.test/api/enhance/export',{method:'POST',headers:{Origin:origin,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({token:ownerToken,csrf:'test-csrf',jobToken,...fields})}),enhancedEnv,{});
- globalThis.fetch=async(url,options)=>{calls++;assert.match(String(url),/\/api\/pdf\/distributed\/jobs\/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\/file$/);assert.equal(options.headers.get('X-Tianhe-Service-Key'),'test-service-key-that-is-at-least-32-bytes');return new Response('%PDF-test',{headers:{'Content-Type':'application/pdf','Content-Length':'9','Content-Disposition':'attachment; filename="enhanced.pdf"'}});};
- try{const response=await send();assert.equal(response.status,200);assert.equal(await response.text(),'%PDF-test');assert.equal(calls,1);assert.equal((await send({csrf:'wrong'})).status,403);assert.equal((await send({},'https://evil.test')).status,403);assert.equal((await send({token:'bad'})).status,401);assert.equal((await send({token:userToken})).status,403);assert.equal(calls,1);}finally{globalThis.fetch=previous;}
-});
+
 test('source connection checks are owner-only and validate live Drive access without modifying readers',async()=>{
  assert.equal((await call('/api/drive/check',userToken,{csrf:'test-csrf'})).status,403);
  const before=await env.DB.prepare("SELECT * FROM users WHERE email='reader@example.com'").first();

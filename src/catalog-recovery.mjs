@@ -1,3 +1,4 @@
+import batch115 from './catalog-115-1-3.mjs';
 // Additive recovery of verified school PDFs. Exact controlled Drive IDs only.
 // Original source identities and files are preserved.
 export const updates = [
@@ -822,3 +823,5 @@ export const additions = [
     "answerAsset": "1u994E7TytsKLptfyAlmgMPgZUTldpvEn"
   }
 ];
+
+additions.push(...batch115);
