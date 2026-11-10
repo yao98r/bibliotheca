@@ -77,3 +77,7 @@ for(const file of ['sw.js','pwa.js','offline.html','privacy.html','terms.html'])
 await cp('public/icons',output+'/icons',{recursive:true});
 await writeFile(output+'/.nojekyll','');
 console.log('Built '+output+' with local PDF.js assets; inline scripts parsed successfully.');
+
+await cp('public/trace-image.mjs',output+'/assets/trace-image.mjs');
+await cp('node_modules/@zxing/library/umd/index.min.js',output+'/assets/zxing.min.js');
+await cp('node_modules/@zxing/library/LICENSE',output+'/assets/ZXING-LICENSE');

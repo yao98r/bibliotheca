@@ -15,7 +15,7 @@ export function invisibleHex(code){
 export function barcodeCommands(code,encode){
  if(!/^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/.test(code))throw Error('授權碼無效');
  const {bars}=encode(code);
- const commands='q\n0.8 g\n'+bars.map(b=>`0 ${(b.position*.35).toFixed(2)} 1.3 ${(b.width*.35).toFixed(2)} re f\n`).join('')+'Q\n';
+ const commands=`% /BibliothecaTrace (${code})\n`+'q\n0.8 g\n'+bars.map(b=>`0 ${(b.position*.35).toFixed(2)} 1.3 ${(b.width*.35).toFixed(2)} re f\n`).join('')+'Q\n';
  if(commands.length>BARCODE_BYTES)throw Error('水印超過預留長度');
  return commands.padEnd(BARCODE_BYTES,' ');
 }

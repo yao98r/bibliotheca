@@ -306,4 +306,9 @@ test('trace context is ticket-bound; page reports deduplicate and old source evi
  const rows=(await (await call('/api/traces?code='+code,ownerToken)).json()).records;assert.equal(rows.length,1);assert.equal(rows[0].pages_reported,1);assert.equal(rows[0].pages_issued,0);assert.equal(rows[0].source_md5,md5);assert.equal(rows[0].title,'Original.pdf');
  const stats=await (await call('/api/stats',ownerToken)).json();assert.ok(stats.events.every(e=>!['page_reported','trace_issue'].includes(e.action)));
  assert.equal((await call('/api/traces?code=invalid',ownerToken)).status,400);
+ const matched=(await (await call('/api/traces?md5='+md5.toUpperCase(),ownerToken)).json()).records;
+ assert.deepEqual(matched.map(r=>r.trace_code),[code]);assert.equal(matched[0].source_md5,md5);
+ assert.equal((await call('/api/traces?md5='+md5,userToken)).status,403);
+ for(const query of ['md5=invalid','md5=','md5='+md5+'&code='+code])assert.equal((await call('/api/traces?'+query,ownerToken)).status,400);
+ assert.equal((await (await call('/api/traces?md5='+'f'.repeat(32),ownerToken)).json()).records.length,0);
 });
