@@ -81,3 +81,5 @@ console.log('Built '+output+' with local PDF.js assets; inline scripts parsed su
 await cp('public/trace-image.mjs',output+'/assets/trace-image.mjs');
 await cp('node_modules/@zxing/library/umd/index.min.js',output+'/assets/zxing.min.js');
 await cp('node_modules/@zxing/library/LICENSE',output+'/assets/ZXING-LICENSE');
+
+await cp('public/privacy-display.js',output+'/privacy-display.js');
