@@ -22,12 +22,13 @@ test('catalog batches preserve order, search all records, reset filters, and ret
   const nodes=Object.fromEntries(['grid','count','moreBooks','search','subject','publisher'].map(id=>[id,Object.assign(element('div'),{value:''})]));
   const books=Array.from({length:145},(_,i)=>({title:'Book '+i,category:'模擬考題本',subject:i%2?'數學A':'英文',publisher:'南一',hasAnswer:true}));
   const context={books,category:'模擬考題本',referenceKind:'',me:{canView:true,canDownload:false},$:id=>nodes[id],el:element,document:{createDocumentFragment:()=>element('fragment')},renderReferenceKinds(){},recordOpen(){}};
-  vm.createContext(context);vm.runInContext(html.slice(start,end),context);
+  vm.createContext(context);vm.runInContext(await readFile('public/catalog-search.js','utf8'),context);vm.runInContext(html.slice(start,end),context);
   context.render();assert.equal(nodes.grid.children.length,60);assert.equal(nodes.moreBooks.hidden,false);
   const first=nodes.grid.children[0];context.render(true);assert.equal(nodes.grid.children.length,120);assert.equal(nodes.grid.children[0],first);
   context.render(true);assert.equal(nodes.grid.children.length,145);assert.equal(nodes.moreBooks.hidden,true);
   assert.equal(nodes.grid.children[144].children[0].textContent,'145');
   nodes.search.value='Book 144';context.render({type:'input'});assert.equal(nodes.grid.children.length,1);assert.match(nodes.grid.children[0].children[1].children[1].textContent,/144/);
+  context.category='參考書';nodes.search.value='模考 Book 144';context.render();assert.equal(nodes.grid.children.length,1);assert.match(nodes.count.textContent,/全部授權書目/);context.category='模擬考題本';
   nodes.search.value='';nodes.subject.value='數學A';context.render();assert.equal(nodes.grid.children.length,60);
   assert.deepEqual(nodes.grid.children[0].children[2].children.map(b=>b.textContent),['開啟書籍','檢視答案']);
   nodes.search.value='not found';context.render();assert.equal(nodes.moreBooks.hidden,true);assert.equal(nodes.grid.children[0].className,'empty-state');

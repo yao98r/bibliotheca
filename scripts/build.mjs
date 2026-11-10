@@ -35,7 +35,7 @@ for(const name of ['index','files','go','viewer','access','download']) {
  html=html.replaceAll('fastDoc.destroy()','fastDoc.loadingTask.destroy()').replaceAll('doc.destroy()','doc.loadingTask.destroy()');
  // Keep navigation on the frontend origin where the bearer session is stored.
  const openStart=html.indexOf('async function recordOpen('),openEnd=html.indexOf('async function showFiles()',openStart);
- if(openStart>=0&&openEnd>openStart)html=html.slice(0,openStart)+`async function recordOpen(book,action,button,asset){status('');button.disabled=true;try{const answer=action.startsWith('answer');asset=asset||(answer?book.answerAsset:book.asset);const bookId=answer?(book.answerBookId||book.id):book.id;const r=await api('/api/event',{id:crypto.randomUUID(),csrf:me.csrf,action,bookId,...(asset?{asset}:{})});location.href=r.url;}catch(e){status(e.message);}finally{button.disabled=false;}}\n`+html.slice(openEnd);
+ if(openStart>=0&&openEnd>openStart)html=html.slice(0,openStart)+`async function recordOpen(book,action,button,asset){if(typeof saveCatalogView==='function')saveCatalogView();status('');button.disabled=true;try{const answer=action.startsWith('answer');asset=asset||(answer?book.answerAsset:book.asset);const bookId=answer?(book.answerBookId||book.id):book.id;const r=await api('/api/event',{id:crypto.randomUUID(),csrf:me.csrf,action,bookId,...(asset?{asset}:{})});location.href=r.url;}catch(e){status(e.message);}finally{button.disabled=false;}}\n`+html.slice(openEnd);
  html=html.replace('bookId:context.bookId,action:context.action','bookId:context.bookId,action:context.action,...(context.asset?{asset:context.asset}:{})');
  html=html.replace(/\$\('download'\)\.onclick=async\(\)=>\{const popup=window\.open[\s\S]*?finally\{\$\('download'\)\.disabled=false;\}\};/,`$('download').onclick=async()=>{$('download').disabled=true;try{const result=await api('/api/viewer/download',{csrf:me.csrf,ticket:params.get('ticket')});location.href=result.url;}catch(e){$('status').textContent=e.message;}finally{$('download').disabled=false;}};`);
  if(['index','files','go'].includes(name)) html=html.replace('<footer>',`<p><a href="${backend}/manage.html">管理者：Drive 連線與書目同步</a></p><footer>`);
@@ -46,6 +46,7 @@ for(const name of ['index','files','go','viewer','access','download']) {
  await writeFile(`${output}/${name}.html`,html);
 }
 await cp('public/enhance.html',output+'/enhance.html');
+await cp('public/catalog-search.js',output+'/catalog-search.js');
 await rm(output+'/enhancement-time.js',{force:true});
 if(!github){
  const manage=await readFile('public/manage.html','utf8');for(const match of manage.matchAll(/<script>([\s\S]*?)<\/script>/g))new vm.Script(match[1],{filename:'manage.html'});
