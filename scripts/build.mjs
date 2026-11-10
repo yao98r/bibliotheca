@@ -46,6 +46,7 @@ for(const name of ['index','files','go','viewer','access','download']) {
  await writeFile(`${output}/${name}.html`,html);
 }
 await cp('public/enhance.html',output+'/enhance.html');
+await cp('public/enhancement-time.js',output+'/enhancement-time.js');
 if(!github){
  const manage=await readFile('public/manage.html','utf8');for(const match of manage.matchAll(/<script>([\s\S]*?)<\/script>/g))new vm.Script(match[1],{filename:'manage.html'});
  await writeFile(output+'/manage.html',manage.replace('</head>',pwaHead+'</head>'));
