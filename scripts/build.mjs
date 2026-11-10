@@ -23,7 +23,7 @@ for(const name of ['index','files','go','viewer','access','download']) {
  const state=encode(crypto.getRandomValues(new Uint8Array(32))),verifier=encode(crypto.getRandomValues(new Uint8Array(48))),challenge=encode(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier)));
  localStorage.setItem(PENDING_LOGIN_KEY+state,JSON.stringify({state,verifier,expiresAt:Date.now()+600000}));
  const returnTo=new URL('./',location.href).href;
- const after=new URLSearchParams(location.search).get('return');if(after)sessionStorage.setItem('bibliotheca-after-login',after);
+ const after=new URLSearchParams(location.search).get('return')||(['go.html','files.html','access.html','viewer.html','download.html'].includes(location.pathname.split('/').pop())?location.pathname.split('/').pop()+location.search:'');if(after)sessionStorage.setItem('bibliotheca-after-login',after);
  location.href=BACKEND+'/auth?'+new URLSearchParams({state,challenge,return_to:returnTo});
  }catch(e){onError(e);}
 }
