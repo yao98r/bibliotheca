@@ -21,7 +21,13 @@ export function restoredSource(book,action){return typeof action==='string'&&act
 export function catalogEntries(assets,books){
  const byId=new Map(assets.map(a=>[a.id,a])),covered=new Set(),result=[];
  const available=(id,category)=>{const a=byId.get(id),b=a&&books.get(a.book_id);return b?.category===category?a:null;};
- const cover=root=>{if(!root)return;covered.add(root.id);if(root.mime===FOLDER)for(const a of assets){let p=a;const seen=new Set();while(p&&!seen.has(p.id)){if(p.id===root.id){covered.add(a.id);break;}seen.add(p.id);p=byId.get(p.parent);}}};
+ const children=new Map(),expanded=new Set();
+ for(const a of assets){const parent=a.parent;if(!children.has(parent))children.set(parent,[]);children.get(parent).push(a);}
+ const cover=root=>{
+  if(!root)return;covered.add(root.id);if(root.mime!==FOLDER)return;
+  const pending=[root];
+  while(pending.length){const a=pending.pop();if(expanded.has(a.id))continue;expanded.add(a.id);covered.add(a.id);for(const child of children.get(a.id)||[])pending.push(child);}
+ };
  for(const b of restored){
   const main=available(b.asset,b.category);if(!main)continue;
   const answer=available(b.answerAsset,b.category);

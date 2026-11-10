@@ -60,6 +60,40 @@ test('D1 daily limit returns actionable retry time without exposing database err
 });
 test('anonymous users cannot enumerate books, users, traces or files',async()=>{for(const path of ['/api/books','/api/allowlist','/api/traces','/file?ticket='+random()])assert.equal((await call(path)).status,401);});
 test('reader cannot read or modify admin settings',async()=>{assert.equal((await call('/api/allowlist',userToken)).status,403);assert.equal((await call('/api/access-policy',userToken,{csrf:'test-csrf',enabled:true})).status,403);});
+test('vertical privilege escalation rejects every administrative API for a reader',async()=>{
+ const paths=['/api/allowlist','/api/access-policy','/api/drive/status','/api/traces','/api/stats','/api/index/source','/api/watermark/source'];
+ for(const path of paths)assert.equal((await call(path,userToken)).status,403,path);
+ for(const path of ['/api/allowlist','/api/access-policy','/api/drive/check','/api/drive/connect','/api/drive/sync','/api/catalog/restore','/api/index/next','/api/index/start','/api/index/page','/api/index/pages','/api/index/finish','/api/index/error','/api/watermark/next','/api/watermark/store'])assert.equal((await call(path,userToken,{csrf:'test-csrf',admin:true,email:'owner@example.com',level:'A'})).status,403,path);
+});
+test('horizontal escalation rejects another reader ticket and mismatched book assets',async()=>{
+ const peer=random(),raw=random(),originalFetch=globalThis.fetch;let upstream=0;
+ try{
+  await env.DB.prepare("INSERT INTO users(email,google_name,individual,view_enabled,access_scope) VALUES ('peer@example.com','peer',1,1,'both')").run();
+  await env.DB.prepare('INSERT INTO sessions VALUES (?,?,?,?)').bind(await hash(peer),'peer@example.com','test-csrf',now()+600).run();
+  await env.DB.prepare('INSERT INTO tickets VALUES (?,?,?,?,?,?,?,?,NULL,?)').bind(await hash(raw),'reader@example.com','ref','ref','open','view','ABCD-EFGH',new Date().toISOString(),now()+600).run();
+  globalThis.fetch=async()=>{upstream++;throw Error('Unauthorized upstream access');};
+  for(const path of ['/api/viewer','/api/page','/api/fast-file','/file','/api/download-context'])assert.equal((await call(path+'?ticket='+raw+'&page=1',peer)).status,403,path);
+  assert.equal((await call('/api/context?book=ref&asset=mock',peer)).status,404);
+  assert.equal(upstream,0);
+ }finally{
+  globalThis.fetch=originalFetch;
+  await env.DB.prepare('DELETE FROM tickets WHERE hash=?').bind(await hash(raw)).run();
+  await env.DB.prepare("DELETE FROM sessions WHERE email='peer@example.com'").run();
+  await env.DB.prepare("DELETE FROM users WHERE email='peer@example.com'").run();
+ }
+});
+test('local anonymous burst rejects 200 requests without database or upstream work',async()=>{
+ let db=0,upstream=0;const originalFetch=globalThis.fetch;
+ const isolated={...env,DB:{prepare(){db++;throw Error('Unexpected database work');}}};
+ globalThis.fetch=async()=>{upstream++;throw Error('Unexpected upstream work');};
+ try{
+  for(let batch=0;batch<10;batch++){
+   const responses=await Promise.all(Array.from({length:20},(_,n)=>worker.fetch(req(['/api/books','/api/page?ticket=invalid','/file?ticket=invalid','/api/allowlist'][n%4],n%2?'malformed':null),isolated,{})));
+   assert.ok(responses.every(r=>r.status===401));
+  }
+  assert.equal(db,0);assert.equal(upstream,0);
+ }finally{globalThis.fetch=originalFetch;}
+});
 test('CSRF rejects foreign origin even with a valid bearer token',async()=>{assert.equal((await call('/api/logout',userToken,{csrf:'test-csrf'},'https://evil.test')).status,403);});
 test('only configured GitHub origin receives CORS access, including error responses',async()=>{
  const crossEnv={...env,FRONTEND_URL:'https://yao98r.github.io/bibliotheca/'};
