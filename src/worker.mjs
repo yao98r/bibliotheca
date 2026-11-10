@@ -1,6 +1,3 @@
-import {enhancementService,signEnhancementJob,readEnhancementJob,enhancementRequest} from './enhancement.mjs';
-import {createPortalGrant,verifyPortalGrant,portalAllowed} from './portal.mjs';
-import {uploadEnhancement} from './enhancement-distributed.mjs';
 import {fail,now,iso,random,hash,day,isDownload,validAction,scopeAllows,permission,validateProfile,traceCode,unb64,ranks,bounded} from './core.mjs';
 import {one,run,rows,setting,setSetting,session,jsonBody,csrf,beginAuth,callback,exchange,driveToken} from './auth.mjs';
 import {syncStep,assetFor,verifyAsset,indexFor,singlePage,fullFile,watermarkedFullFile} from './drive.mjs';
@@ -58,14 +55,14 @@ async function handle(request,env,ctx){
  if(p==='/auth'&&method==='GET')return beginAuth(request,env);
  if(p==='/auth/callback'&&method==='GET')return callback(request,env);
  if(p==='/api/exchange'&&method==='POST')return exchange(request,env);
- if(p==='/api/enhance/portal/verify'&&method==='POST'){
-  const service=enhancementService(env);if(!service||request.headers.get('X-Tianhe-Service-Key')!==service.apiKey)fail(403,'服務授權無效');
-  const body=await jsonBody(request,4096);return json(await verifyPortalGrant(env,body.token,body.audience));
- }
- if(p==='/api/enhance/export'&&method==='POST'){
+ if(p==='/api/enhance'||p.startsWith('/api/enhance/'))fail(410,'增強系統已停止提供，請使用書庫原始 PDF。');
+ if(p==='/api/download/export'&&method==='POST'){
   if(!allowedOrigin(request,env)||!request.headers.get('content-type')?.startsWith('application/x-www-form-urlencoded'))fail(403,'請從天眼下載頁操作');
-  const form=new URLSearchParams(new TextDecoder().decode(await bounded(request,32768))),headers=new Headers(request.headers);headers.set('Authorization','Bearer '+form.get('token'));const u=await session(new Request(url,{headers}),env);csrf(request,{csrf:form.get('csrf')},u,env);await portalAllowed(env,u);
-  const job=await readEnhancementJob(env,u,form.get('jobToken'));await bookFor(env,u,job.book);can(u,'download_request');await assetFor(env,job.book,job.asset);const response=await enhancementRequest(env,(job.mode==='distributed'?'distributed/jobs/':'jobs/')+job.job+'/file'),h=new Headers(response.headers);h.set('Cache-Control','no-store');h.set('X-PDF-Watermark','server-v2');if(response.headers.get('Content-Length'))h.set('X-PDF-Bytes',response.headers.get('Content-Length'));return new Response(response.body,{headers:h});
+  const form=new URLSearchParams(new TextDecoder().decode(await bounded(request,32768))),headers=new Headers(request.headers);
+  headers.set('Authorization','Bearer '+form.get('token'));
+  const user=await session(new Request(url,{headers}),env);csrf(request,{csrf:form.get('csrf')},user,env);
+  // Use the identical permission, quota, source integrity and personalized PDF pipeline.
+  return handle(new Request(url.origin+'/file?ticket='+encodeURIComponent(form.get('ticket')||''),{headers}),env,ctx);
  }
  if(!p.startsWith('/api/')&&p!=='/file'){
    if(!['GET','HEAD'].includes(method))fail(405,'方法不支援');
@@ -76,28 +73,10 @@ async function handle(request,env,ctx){
  }
  if(!['GET','POST'].includes(method))fail(405,'方法不支援');
  const u=await session(request,env);
- const canEnhance=(p==='/api/me'||p.startsWith('/api/enhance/'))?(u.admin||(await setting(env,'enhance:'+u.email))!==false):true;
- if(p.startsWith('/api/enhance/')&&p!=='/api/enhance/config'&&!canEnhance)fail(403,'此帳號尚未開放天河增強權限，請聯絡管理者。');
  if(p.startsWith('/api/index/')||p.startsWith('/api/watermark/'))admin(u);
  const body=method==='POST'?await jsonBody(request,p==='/api/index/pages'?6*1024*1024:['/api/index/page','/api/watermark/store'].includes(p)?750000:32768):null;
  if(body)csrf(request,body,u,env);
- if(p==='/api/me'&&method==='GET')return json({email:u.email,name:u.display_name||u.google_name,...(u.admin?{level:u.level,ranks}:{}),admin:u.admin,csrf:u.csrf,canView:!!u.view_enabled,canDownload:u.download_mode==='download',canEnhance,readingMode:u.reading_mode,dailyLimit:u.daily_download_limit,downloadsToday:(await one(env,'SELECT COUNT(*) n FROM downloads WHERE email=? AND day=?',u.email,day())).n});
- if(p==='/api/enhance/config'&&method==='GET')return json({enabled:!!enhancementService(env)&&u.download_mode==='download'&&canEnhance,maxBytes:null,maxPages:null,parallelism:10,name:'天河增強系統'});
- if(p==='/api/enhance/portal'&&body)return json(await createPortalGrant(env,u,body.audience));
- if(p==='/api/enhance/start'&&body){
-  if(!enhancementService(env))fail(503,'天河增強系統正在準備中，請先下載原始畫質。');
-  const {t,a}=await ticket(env,u,body.ticket);if(t.kind!=='download')fail(403,'請從下載入口使用畫質增強');can(u,t.action);
-  if(![300,600,800].includes(body.dpi))fail(400,'畫質設定無效');
-  const original=await handle(new Request(url.origin+'/file?ticket='+encodeURIComponent(body.ticket),{headers:request.headers}),env,ctx);
-  const length=Number(original.headers.get('X-PDF-Bytes')||original.headers.get('Content-Length')),state=await uploadEnhancement(env,original.body,length,a.name,{dpi:body.dpi,removeWatermarks:body.removeWatermarks!==false,sharpen:true});
-  return json({...state,jobToken:await signEnhancementJob(env,u,{job:state.id,book:t.book_id,asset:t.asset_id,mode:'distributed'})});
- }
- if(['/api/enhance/step','/api/enhance/result','/api/enhance/file'].includes(p)&&body){
-  const job=await readEnhancementJob(env,u,body.jobToken);await bookFor(env,u,job.book);can(u,'download_request');await assetFor(env,job.book,job.asset);
-  const action=p.slice('/api/enhance/'.length),response=await enhancementRequest(env,(job.mode==='distributed'?'distributed/jobs/':'jobs/')+job.job+'/'+action,{method:action==='step'?'POST':'GET'});
-  if(action!=='file')return json(await response.json());
-  const h=new Headers(response.headers);if(response.headers.get('Content-Length'))h.set('X-PDF-Bytes',response.headers.get('Content-Length'));else h.delete('X-PDF-Bytes');h.set('X-PDF-Watermark','server-v2');h.set('Cache-Control','no-store');return new Response(response.body,{headers:h});
- }
+ if(p==='/api/me'&&method==='GET')return json({email:u.email,name:u.display_name||u.google_name,...(u.admin?{level:u.level,ranks}:{}),admin:u.admin,csrf:u.csrf,canView:!!u.view_enabled,canDownload:u.download_mode==='download',canEnhance:false,readingMode:u.reading_mode,dailyLimit:u.daily_download_limit,downloadsToday:(await one(env,'SELECT COUNT(*) n FROM downloads WHERE email=? AND day=?',u.email,day())).n});
  if(p==='/api/logout'&&body){await run(env,'DELETE FROM sessions WHERE hash=?',u.sessionHash);return json({ok:true});}
  if(p==='/api/books'&&method==='GET'){
    const books=new Map((await rows(env,'SELECT * FROM books')).filter(b=>scopeAllows(u.access_scope,b.category)).map(b=>[b.id,b]));
@@ -112,19 +91,16 @@ async function handle(request,env,ctx){
      if(email===env.OWNER_EMAIL.toLowerCase()&&body.action!=='update')fail(403,'管理者不能被停用或改用預設權限');
      if(['add','update'].includes(body.action)){
        validateProfile(body);
-       if(body.canEnhance!==undefined&&typeof body.canEnhance!=='boolean')fail(400,'增強權限設定無效');
-       if(email===env.OWNER_EMAIL.toLowerCase()&&body.canEnhance===false)fail(403,'管理者固定保留完整權限');
        if(email===env.OWNER_EMAIL.toLowerCase()&&(body.scope!=='both'||!body.viewEnabled||body.downloadMode!=='download'||body.readingMode!=='fast'||body.dailyLimit!==null))fail(403,'管理者固定保留完整權限');
        await run(env,`INSERT INTO users(email,display_name,level,access_scope,download_mode,view_enabled,reading_mode,daily_download_limit,individual,blocked) VALUES (?,?,?,?,?,?,?,?,1,0) ON CONFLICT(email) DO UPDATE SET display_name=excluded.display_name,level=excluded.level,access_scope=excluded.access_scope,download_mode=excluded.download_mode,view_enabled=excluded.view_enabled,reading_mode=excluded.reading_mode,daily_download_limit=excluded.daily_download_limit,individual=1,blocked=0`,email,body.displayName,body.level,body.scope,body.downloadMode,Number(body.viewEnabled),body.readingMode,body.dailyLimit);
-       if(body.canEnhance!==undefined)await setSetting(env,'enhance:'+email,body.canEnhance);
      }else if(body.action==='remove'){
        await env.DB.batch([env.DB.prepare('UPDATE users SET blocked=1 WHERE email=?').bind(email),env.DB.prepare('DELETE FROM sessions WHERE email=?').bind(email)]);
-     }else if(body.action==='inherit'){await run(env,'UPDATE users SET individual=0 WHERE email=?',email);await setSetting(env,'enhance:'+email,true);}
+     }else if(body.action==='inherit'){await run(env,'UPDATE users SET individual=0 WHERE email=?',email);}
      else fail(400,'操作無效');
    }
    const policy=await setting(env,'policy');
-   const users=await rows(env,`SELECT u.*,COALESCE(d.n,0) downloads_today,ep.value AS enhancement_setting FROM users u LEFT JOIN settings ep ON ep.key='enhance:'||u.email LEFT JOIN (SELECT email,COUNT(*) n FROM downloads WHERE day=? GROUP BY email) d ON d.email=u.email ORDER BY u.email`,day());
-   for(const person of users){const p=permission(person,policy,person.email===env.OWNER_EMAIL.toLowerCase());Object.assign(person,p);person.can_enhance=p.owner||person.enhancement_setting!=='false';delete person.enhancement_setting;delete person.google_sub;}
+   const users=await rows(env,`SELECT u.*,COALESCE(d.n,0) downloads_today FROM users u LEFT JOIN (SELECT email,COUNT(*) n FROM downloads WHERE day=? GROUP BY email) d ON d.email=u.email ORDER BY u.email`,day());
+   for(const person of users){const p=permission(person,policy,person.email===env.OWNER_EMAIL.toLowerCase());Object.assign(person,p);person.can_enhance=false;delete person.google_sub;}
    return json({users});
  }
  if(p==='/api/drive/status'&&method==='GET'){admin(u);const d=await setting(env,'drive'),counts=await one(env,"SELECT COUNT(*) pdfs,COALESCE(SUM(EXISTS(SELECT 1 FROM pdf_headers h WHERE h.size=a.size AND h.md5=a.md5)),0) indexed_count,COALESCE(SUM(EXISTS(SELECT 1 FROM pdf_watermarks w WHERE w.size=a.size AND w.md5=a.md5 AND w.version=2)),0) protected_count FROM assets a WHERE mime='application/pdf'");return json({configured:!!d,email:d?.email||null,books:(await one(env,'SELECT COUNT(*) n FROM books')).n,pdfs:counts.pdfs,indexed:counts.indexed_count,watermarked:counts.protected_count});}
@@ -240,6 +216,9 @@ export default {async fetch(request,env,ctx){
  const headers=limited?{'Retry-After':String(86400-now()%86400)}:e.retryAfter?{'Retry-After':String(e.retryAfter)}:{};
  if(['/auth','/auth/callback'].includes(new URL(request.url).pathname)){
    response=new Response(authErrorPage(status,message,env.FRONTEND_URL||new URL('/',request.url).href),{status,headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
+   }else if(new URL(request.url).pathname==='/api/download/export'){
+    const escape=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    response=new Response(`<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>下載未完成 · 天眼</title><body style="background:#f3ead9;color:#302820;font:18px/1.8 system-ui;max-width:700px;margin:10vh auto;padding:24px"><h1>下載未完成</h1><p>${escape(message)}</p><p><a href="${escape(env.FRONTEND_URL||new URL('/',request.url).href)}">返回書庫重新取得下載入口</a></p></body></html>`,{status,headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
    }else response=json({error:message,...(['DRIVE_RECONNECT_REQUIRED','DRIVE_CONFIGURATION_ERROR'].includes(e.code)?{code:e.code}:{})},{status,headers});
  }
  const h=new Headers(response.headers);h.set('X-Content-Type-Options','nosniff');h.set('Referrer-Policy','no-referrer');h.set('X-Frame-Options','DENY');
