@@ -18,3 +18,8 @@ test('trace queries distinguish original MD5 from normalized trace codes and rej
  assert.equal(traceQuery(' abcd-efgh '),'?code=ABCD-EFGH');assert.equal(traceQuery('ABCDEF0123456789ABCDEF0123456789'),'?md5=abcdef0123456789abcdef0123456789');assert.equal(traceQuery(''),'');
  for(const s of ['abc','a'.repeat(31),'1234-5678'])assert.throws(()=>traceQuery(s),/追蹤碼/);
 });
+test('subpixel gray bars survive antialiasing without relaxing checksum validation',async()=>{
+ const {bars,units}=encodeCode39('ABCD-EFGH'),width=25,height=Math.ceil(units*1.46)+8,data=new Uint8ClampedArray(width*height*4).fill(255);
+ for(let y=0;y<height;y++){let coverage=0;for(const bar of bars){const start=4+bar.position*1.46,end=start+bar.width*1.46;coverage+=Math.max(0,Math.min(y+1,end)-Math.max(y,start));}for(let x=19;x<23;x++){const i=4*(y*width+x);data[i]=data[i+1]=data[i+2]=Math.round(255-51*Math.min(1,coverage));}}
+ assert.equal(await scanTracePixels({data,width,height},ZXing),'ABCD-EFGH');
+});
