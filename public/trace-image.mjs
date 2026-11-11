@@ -35,7 +35,7 @@ export async function scanTracePixels({data,width,height},ZXing){
      if(bits===smooth){smooth.clear();for(let at=0;at<length;at++){const a=grayLine[at],b=grayLine[Math.min(at+1,length-1)];for(let sub=0;sub<4;sub++)if(a+(b-a)*sub/4<230)smooth.set(at*4+sub);}}
      for(let direction=0;direction<2;direction++){
       if(direction)bits.reverse();
-      try{const code=reader.decodeRow(line,bits).getText();if(validTrace(code)){decoded=code;break;}}catch(e){if(!['NotFoundException','ChecksumException','FormatException'].includes(e.constructor.name))throw e;}
+      try{const code=reader.decodeRow(line,bits).getText();if(validTrace(code)){decoded=code;break;}}catch(e){if(!(e instanceof ZXing.NotFoundException||e instanceof ZXing.ChecksumException||e instanceof ZXing.FormatException))throw e;}
      }
      if(decoded)break;
     }

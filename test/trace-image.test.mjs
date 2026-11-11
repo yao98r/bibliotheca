@@ -23,3 +23,8 @@ test('subpixel gray bars survive antialiasing without relaxing checksum validati
  for(let y=0;y<height;y++){let coverage=0;for(const bar of bars){const start=4+bar.position*1.46,end=start+bar.width*1.46;coverage+=Math.max(0,Math.min(y+1,end)-Math.max(y,start));}for(let x=19;x<23;x++){const i=4*(y*width+x);data[i]=data[i+1]=data[i+2]=Math.round(255-51*Math.min(1,coverage));}}
  assert.equal(await scanTracePixels({data,width,height},ZXing),'ABCD-EFGH');
 });
+test('minified browser exception class names do not abort ordinary unsuccessful scan lines',async()=>{
+ class Minified extends ZXing.NotFoundException{}
+ const decoder={...ZXing,Code39Reader:class{decodeRow(){throw new Minified();}}};
+ assert.equal(await scanTracePixels(image(),decoder),null);
+});

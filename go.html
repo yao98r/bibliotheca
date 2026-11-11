@@ -185,7 +185,7 @@ function showAdminPanel(kind){
  (kind==='account'?accessUsers():kind==='stats'?stats():traces()).catch(e=>status(e.message));
 }
 let traceQuerySerial=0;
-async function traces(code=''){if(!me?.admin)return;const requestId=++traceQuerySerial;$('traceStatus').textContent='正在查詢…';$('traceRows').replaceChildren();try{const {traceQuery}=await import('./assets/trace-image.mjs?v=20261111-1');const data=await api('/api/traces'+traceQuery(code));if(requestId!==traceQuerySerial)return;for(const r of data.records){const tr=el('tr'),codeCell=el('td');codeCell.append(el('code',r.trace_code));const file=el('td',r.title+' · '+(r.action==='answer_open'||r.action==='answer_download'?'答案':'主書／分冊／附冊')+' · 檔案 '+r.asset_id,'book');tr.append(codeCell,el('td',TianyanPrivacy.name(r.name,r.email,!!code.trim())+' / '+TianyanPrivacy.email(r.email,!!code.trim())),file,el('td',(r.kind==='view'?'線上閱覽':'PDF 取檔')+' · '+(r.issued_at?'已開始交付':'尚未交付')),el('td',date(r.created_at)+(r.issued_at?' / '+date(r.issued_at):'')),el('td',(r.pages_issued||0)+' / '+(r.pages_reported||0)),el('td',r.source_md5||'舊版未記錄','trace-fingerprint'));$('traceRows').append(tr);}$('traceStatus').textContent=data.records.length?'顯示 '+data.records.length+' 筆紀錄。交付表示伺服器已開始傳送，不代表使用者完成儲存。':code?'找不到符合的發放紀錄；原檔 MD5 不等於加上追蹤標記後的檔案 MD5。':'目前尚無追蹤紀錄。';}catch(e){$('traceStatus').textContent=e.message;}}
+async function traces(code=''){if(!me?.admin)return;const requestId=++traceQuerySerial;$('traceStatus').textContent='正在查詢…';$('traceRows').replaceChildren();try{const {traceQuery}=await import('./assets/trace-image.mjs?v=20261111-2');const data=await api('/api/traces'+traceQuery(code));if(requestId!==traceQuerySerial)return;for(const r of data.records){const tr=el('tr'),codeCell=el('td');codeCell.append(el('code',r.trace_code));const file=el('td',r.title+' · '+(r.action==='answer_open'||r.action==='answer_download'?'答案':'主書／分冊／附冊')+' · 檔案 '+r.asset_id,'book');tr.append(codeCell,el('td',TianyanPrivacy.name(r.name,r.email,!!code.trim())+' / '+TianyanPrivacy.email(r.email,!!code.trim())),file,el('td',(r.kind==='view'?'線上閱覽':'PDF 取檔')+' · '+(r.issued_at?'已開始交付':'尚未交付')),el('td',date(r.created_at)+(r.issued_at?' / '+date(r.issued_at):'')),el('td',(r.pages_issued||0)+' / '+(r.pages_reported||0)),el('td',r.source_md5||'舊版未記錄','trace-fingerprint'));$('traceRows').append(tr);}$('traceStatus').textContent=data.records.length?'顯示 '+data.records.length+' 筆紀錄。交付表示伺服器已開始傳送，不代表使用者完成儲存。':code?'找不到符合的發放紀錄；原檔 MD5 不等於加上追蹤標記後的檔案 MD5。':'目前尚無追蹤紀錄。';}catch(e){$('traceStatus').textContent=e.message||'無法辨識圖片，請保留完整條碼後重試。';}}
 $('updatesTab').onclick=()=>{
  if(!me)return;for(const id of ['catalogPanel','accountPanel','adminPanel','tracePanel'])$(id).hidden=true;$('updatesPanel').hidden=false;
  for(const id of ['refTab','mockTab','adminTab','statsTab','traceTab','updatesTab']){$(id).classList.toggle('active',id==='updatesTab');$(id).setAttribute('aria-pressed',String(id==='updatesTab'));}
@@ -197,10 +197,10 @@ $('traceFile').onchange=async()=>{
  try{
   let code;
   if(f.type==='application/pdf'||/\.pdf$/i.test(f.name)){const {extractTrace}=await import('./assets/trace-watermark.mjs');code=await extractTrace(f,()=>import('./assets/pdf-lib.esm.min.js'));}
-  else{const {extractImageTrace}=await import('./assets/trace-image.mjs?v=20261111-1');code=await extractImageTrace(f);}
+  else{const {extractImageTrace}=await import('./assets/trace-image.mjs?v=20261111-2');code=await extractImageTrace(f);}
   if(!code)throw Error('找不到可驗證的追蹤碼。圖片須包含清楚且完整的頁邊條碼；沒有辨識結果不代表沒有追蹤，也不能據此判定持有人。');
   $('traceCode').value=code;await traces(code);
- }catch(e){$('traceStatus').textContent=e.message;}finally{$('traceFile').disabled=false;}
+ }catch(e){$('traceStatus').textContent=e.message||'無法辨識圖片，請保留完整條碼後重試。';}finally{$('traceFile').disabled=false;$('traceFile').value='';}
 };$('traceSearch').onsubmit=e=>{e.preventDefault();traces($('traceCode').value.trim());};$('traceRecent').onclick=()=>{$('traceCode').value='';traces();};
 init();
 </script></body></html>
