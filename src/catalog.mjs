@@ -1,4 +1,5 @@
 import original from './restored-catalog.mjs';
+import {attachAnswerSheets} from './answer-sheets.mjs';
 import {updates,additions} from './catalog-recovery.mjs';
 const recovered=new Map(original.map(b=>[b.id,b]));
 for(const patch of updates){if(!recovered.has(patch.id))throw Error('Unknown recovered catalog identity: '+patch.id);recovered.set(patch.id,{...recovered.get(patch.id),...patch});}
@@ -36,7 +37,7 @@ export function catalogEntries(assets,books){
   cover(main);cover(answer);cover(available(b.answerSourceAsset,b.category));
  }
  for(const a of assets)if(a.mime==='application/pdf'&&!covered.has(a.id)&&books.has(a.book_id))result.push(pdfCatalogEntry(a,books.get(a.book_id)));
- return result;
+ return attachAnswerSheets(result,assets,books);
 }
 export function pdfCatalogEntry(asset,book){
  const metadata=JSON.parse(book.data),fileTitle=asset.name.replace(/\.pdf$/i,'');

@@ -80,7 +80,7 @@ async function handle(request,env,ctx){
  if(p==='/api/logout'&&body){await run(env,'DELETE FROM sessions WHERE hash=?',u.sessionHash);return json({ok:true});}
  if(p==='/api/books'&&method==='GET'){
    const books=new Map((await rows(env,'SELECT * FROM books')).filter(b=>scopeAllows(u.access_scope,b.category)).map(b=>[b.id,b]));
-   return json(catalogEntries(await rows(env,'SELECT a.id,a.book_id,a.parent,a.name,a.mime,EXISTS(SELECT 1 FROM pdf_headers h WHERE h.size=a.size AND h.md5=a.md5) AS indexedReady FROM assets a ORDER BY name'),books));
+   return json(catalogEntries(await rows(env,'SELECT a.id,a.book_id,a.parent,a.name,a.mime,EXISTS(SELECT 1 FROM pdf_headers h WHERE h.size=a.size AND h.md5=a.md5) AS indexedReady,EXISTS(SELECT 1 FROM pdf_watermarks w WHERE w.size=a.size AND w.md5=a.md5 AND w.version=2) AS watermarkedReady FROM assets a ORDER BY name'),books));
  }
  if(p==='/api/access-policy'){
    admin(u);if(body){if(typeof body.enabled!=='boolean'||!['catalog','read','download'].includes(body.defaultTier)||!['both','ref','mock'].includes(body.scope)||(body.dailyLimit!==null&&(!Number.isInteger(body.dailyLimit)||body.dailyLimit<0||body.dailyLimit>10000)))fail(400,'全站權限設定無效');await setSetting(env,'policy',{enabled:body.enabled,defaultTier:body.defaultTier,scope:body.scope,dailyLimit:body.dailyLimit});}return json(await setting(env,'policy'));
