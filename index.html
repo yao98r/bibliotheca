@@ -209,7 +209,7 @@ $('updatesTab').onclick=()=>{
 };
 $('traceTab').onclick=()=>showAdminPanel('trace');
 $('traceFile').onchange=async()=>{
- const f=$('traceFile').files[0];if(!f)return;
+ const f=$('traceFile').files[0];if(!f)return;traceQuerySerial++;$('traceCode').value='';
  $('traceFile').disabled=true;$('traceStatus').textContent='正在本機辨識…';$('traceRows').replaceChildren();
  try{
   let code;
