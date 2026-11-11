@@ -17,27 +17,35 @@ async function loadDecoder(){
 // shortcut: perspective-warped photos need rectification; never guess a partial code.
 export async function scanTracePixels({data,width,height},ZXing){
  if(width*height>40000000||Math.max(width,height)>12000)throw Error('圖片過大，請裁切完整條碼附近後重試。');
- const reader=new ZXing.Code39Reader(true,false),found=new Set();
+ const reader=new ZXing.Code39Reader(true,false),found=new Map();
  for(const vertical of [true,false]){
-  const length=vertical?height:width,lines=vertical?width:height,row=new ZXing.BitArray(length);
+  const length=vertical?height:width,lines=vertical?width:height,row=new ZXing.BitArray(length),smooth=new ZXing.BitArray(length*4),grayLine=new Float32Array(length);
   for(let line=0;line<lines;line++){
    row.clear();let dark=0;
    for(let at=0;at<length;at++){
     const i=4*(vertical?at*width+line:line*width+at),a=data[i+3]/255;
     const gray=(data[i]*.299+data[i+1]*.587+data[i+2]*.114)*a+255*(1-a);
+    grayLine[at]=gray;
     if(gray<235){row.set(at);dark++;}
    }
    if(dark>=30&&dark<length*.9){
-    for(let direction=0;direction<2;direction++){
-     if(direction)row.reverse();
-     try{const code=reader.decodeRow(line,row).getText();if(validTrace(code))found.add(code);}catch(e){if(!['NotFoundException','ChecksumException','FormatException'].includes(e.constructor.name))throw e;}
+    let decoded=null;
+    // Interpolate before binarization: 300-DPI narrow bars are only ~1.5 pixels.
+    for(const bits of [row,smooth]){
+     if(bits===smooth){smooth.clear();for(let at=0;at<length;at++){const a=grayLine[at],b=grayLine[Math.min(at+1,length-1)];for(let sub=0;sub<4;sub++)if(a+(b-a)*sub/4<230)smooth.set(at*4+sub);}}
+     for(let direction=0;direction<2;direction++){
+      if(direction)bits.reverse();
+      try{const code=reader.decodeRow(line,bits).getText();if(validTrace(code)){decoded=code;break;}}catch(e){if(!['NotFoundException','ChecksumException','FormatException'].includes(e.constructor.name))throw e;}
+     }
+     if(decoded)break;
     }
+    if(decoded)found.set(decoded,(found.get(decoded)||0)+1);
    }
-   if(found.size>1)throw Error('圖片包含不同追蹤碼，請裁切單一完整條碼後重試。');
+   if([...found.values()].filter(n=>n>=2).length>1)throw Error('圖片包含不同追蹤碼，請裁切單一完整條碼後重試。');
    if(line%64===0)await new Promise(resolve=>setTimeout(resolve,0));
   }
  }
- return [...found][0]||null;
+ return [...found].find(([,lines])=>lines>=2)?.[0]||null;
 }
 export async function extractImageTrace(file){
  if(file.size>25*1024*1024)throw Error('圖片超過 25 MB，請裁切完整條碼附近後重試。');
