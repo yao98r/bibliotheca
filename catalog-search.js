@@ -15,3 +15,8 @@ function matchesCatalogSearch(book,tokens){
  const text=normalizeCatalogText([book.title,book.subject,book.publisher,book.series,book.year,book.category,book.referenceKind,book.referenceType].filter(Boolean).join(' ')).replace(/\s/g,'');
  return tokens.every(token=>text.includes(token));
 }
+
+function catalogInScope(book,{category,referenceKind,namesOnly,scope}){
+ if(namesOnly)return scope?book.category===scope:['參考書','模擬考題本'].includes(book.category);
+ return book.category===category&&(category!=='參考書'||!referenceKind||book.referenceKind===referenceKind);
+}
